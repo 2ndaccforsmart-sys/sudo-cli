@@ -36,9 +36,7 @@ SYSTEM_PROMPT = (
     "<tool:delete_file path=\"relative/path/to/file_or_dir\"/>\n\n"
     "5. Run a shell command:\n"
     "<tool:run_command cmd=\"command to execute\"/>\n\n"
-    "When you run a tool, the output of the tool will be provided to you in the next turn. "
-    "Always state what you are doing before calling a tool, and keep your explanations brief. "
-    "Do not talk too much; focus on executing tasks."
+    "When you run a tool, the output of the tool will be provided to you in the next turn."
 )
 
 
