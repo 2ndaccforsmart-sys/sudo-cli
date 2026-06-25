@@ -10,7 +10,7 @@ import json
 from typing import Generator, Any
 
 from sudo.core.config import load, save
-from sudo.core.provider import ProviderFactory, BaseProvider
+from sudo.core.provider import PROVIDER_REGISTRY, ProviderFactory, BaseProvider
 from sudo.core.session import SessionManager
 from sudo.utils.output import terminal_width
 
@@ -248,14 +248,119 @@ def print_status_bar(model: str, messages: list[dict], last_response_time: float
     print("\033[38;5;208m" + "─" * tw + "\033[0m")
 
 
-def run_chat(args) -> int:
+def check_and_run_setup() -> bool:
+    """Interactively setup provider and key if not set. Returns True if setup succeeds/is already configured."""
     cfg = load()
-    if not cfg.provider:
-        print("\033[31mError: No provider configured.\033[0m")
-        print("Use 'sudo provider set <name>' to set an active provider.")
-        print("Use 'sudo provider list' to see all available providers.")
+    
+    has_provider = bool(cfg.provider)
+    has_key = False
+    
+    if has_provider:
+        try:
+            pc = cfg.get_provider_config()
+            defn = PROVIDER_REGISTRY.get(pc.name)
+            env_key = defn.env_key if defn else ""
+            if pc.api_key or (env_key and os.environ.get(env_key)):
+                has_key = True
+        except Exception:
+            pass
+            
+    if has_provider and has_key:
+        return True
+        
+    print("\033[33m⚠️  SUDO CLI is not configured yet.\033[0m")
+    try:
+        choice = input("Would you like to set up an LLM provider now? (y/N): ").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return False
+        
+    if choice not in ("y", "yes"):
+        return False
+        
+    popular = [
+        ("google/gemini", "Google Gemini (Free tier available)"),
+        ("groq", "Groq (Free tier available)"),
+        ("github", "GitHub Models (Free with Copilot subscription)"),
+        ("openrouter", "OpenRouter (Multi-model hub with free models)"),
+        ("openai", "OpenAI (GPT-4o, etc.)"),
+        ("anthropic", "Anthropic (Claude Sonnet, etc.)"),
+        ("deepseek", "DeepSeek (Chat & Coder)"),
+    ]
+    
+    print("\nSelect a provider:")
+    for idx, (name, desc) in enumerate(popular, 1):
+        print(f"  {idx}. {desc} [{name}]")
+    print("  8. Custom / Other provider")
+    
+    try:
+        sel = input("Choose option (1-8): ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return False
+        
+    selected_name = ""
+    if sel.isdigit() and 1 <= int(sel) <= 7:
+        selected_name = popular[int(sel)-1][0]
+    elif sel == "8":
+        try:
+            selected_name = input("Enter provider name (e.g. ollama, together): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return False
+    else:
+        print("\033[31mInvalid selection.\033[0m")
+        return False
+        
+    if selected_name not in PROVIDER_REGISTRY:
+        print(f"\033[31mProvider '{selected_name}' is not in the registry.\033[0m")
+        print("Please check available providers using 'sudo provider list'.")
+        return False
+        
+    defn = PROVIDER_REGISTRY[selected_name]
+    print(f"\nSetting up provider: \033[1m{defn.display}\033[0m ({selected_name})")
+    print(f"  Default model: {defn.default_model}")
+    print(f"  Get API key at: {defn.docs_url}")
+    print(f"  You can set environment variable: {defn.env_key}")
+    
+    try:
+        use_env = input(f"Use environment variable {defn.env_key}? (y/N): ").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return False
+        
+    api_key = ""
+    if use_env in ("y", "yes"):
+        if os.environ.get(defn.env_key):
+            print(f"\033[32mFound {defn.env_key} in environment.\033[0m")
+        else:
+            print(f"\033[33mWarning: {defn.env_key} is not set in your current environment.\033[0m")
+            print(f"Make sure to export {defn.env_key}=your_key")
+    else:
+        try:
+            api_key = input("Enter API key: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return False
+            
+        if not api_key:
+            print("\033[31mAPI key cannot be empty.\033[0m")
+            return False
+            
+    cfg.provider = selected_name
+    if api_key:
+        cfg.api_key = api_key
+    save(cfg)
+    print("\n\033[32m✓ Configuration saved successfully!\033[0m\n")
+    return True
+
+
+def run_chat(args) -> int:
+    if not check_and_run_setup():
+        print("\033[31mError: Chat session cannot start without configuration.\033[0m")
         return 1
         
+    cfg = load()
     try:
         pc = cfg.get_provider_config()
         provider = ProviderFactory.create(pc.name, api_key=pc.api_key, model=pc.model, base_url=pc.base_url)
