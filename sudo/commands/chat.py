@@ -22,11 +22,10 @@ from sudo import __version__
 
 SYSTEM_PROMPT = (
     "You are SUDO, an autonomous AI coding assistant running in Android Termux.\n\n"
-    "CRITICAL CONSTRAINTS (NO BUTTERY TONE):\n"
-    "- Be extremely direct, blunt, and concise. Do NOT use polite filler words, greetings, or conversational fluff.\n"
-    "- If the user says hello or hi, do not greet them back with fluff—simply ask directly what task they want you to perform.\n"
-    "- Do explain what you are about to do before calling a tool. Do explain what you did after a tool runs. Just use the tool or answer the question.\n"
-    "- Never say things like 'Here is the file content', 'Certainly, I can help with that', or 'Let's check this'. Output ONLY the tool call tag or the raw answer.\n\n"
+    "CRITICAL CONSTRAINTS:\n"
+    "- Be direct, professional, and clear. Avoid excessive greetings or unnecessary filler, but respond naturally and helpfully to the user.\n"
+    "- You can explain what you are about to do before calling a tool, and explain what you did after a tool runs.\n"
+    "- If the user says hello or hi, greet them back professionally and ask how you can assist them.\n\n"
     "To interact with the environment, use the following XML tags. If you do not need to run a tool to address the user's input (e.g., for greetings, general questions, or chat), respond with a direct text answer instead of calling a tool.\n"
     "Do NOT combine multiple tool calls in a single turn. Only call one tool at a time, wait for the tool output, then decide the next action.\n\n"
     "Available tools:\n"
@@ -407,7 +406,7 @@ def print_status_bar(model: str, messages: list[dict], last_response_time: float
         f"\033[48;5;236m"
         f"\033[38;5;220m⚡ {model}\033[0m\033[48;5;236m | "
         f"ctx \033[38;5;220m{ctx_text}\033[0m\033[48;5;236m | "
-        f"[\033[38;5;220m{bar}\033[0m\033[48;5;236m] \033[38;5;220m{pct_text}\033[0m\033[48;5;236m | "
+        f"[\033[38;5;220m{'█' * num_filled}\033[0m\033[38;5;242m{'░' * num_empty}\033[0m\033[48;5;236m] \033[38;5;220m{pct_text}\033[0m\033[48;5;236m | "
         f"\033[38;5;220m{time_text}\033[0m\033[48;5;236m | "
         f"⏰\033[38;5;220m{elapsed_text}\033[0m\033[48;5;236m{padding}\033[0m"
     )
@@ -1012,13 +1011,22 @@ def run_chat(args) -> int:
             
             while turn < max_turns:
                 turn += 1
-                print("\033[1mSUDO:\033[0m")
+                tw = terminal_width()
+                print(f"\033[38;5;208m─  ⚡ SUDO  " + "─" * (tw - 12) + "\033[0m")
                 
                 current_response = ""
                 usage_stats = {"prompt_tokens": 0, "completion_tokens": 0}
                 try:
+                    is_start_of_line = True
                     for chunk in chat_stream(provider, messages, usage_stats=usage_stats):
-                        print(chunk, end="", flush=True)
+                        for char in chunk:
+                            if is_start_of_line:
+                                if char != "\n":
+                                    print("   ", end="", flush=True)
+                                    is_start_of_line = False
+                            if char == "\n":
+                                is_start_of_line = True
+                            print(char, end="", flush=True)
                         current_response += chunk
                 except Exception as e:
                     print(f"\n\033[31mError during stream: {e}\033[0m")
