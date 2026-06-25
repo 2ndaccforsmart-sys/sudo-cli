@@ -376,8 +376,17 @@ def print_status_bar(model: str, messages: list[dict], last_response_time: float
     else:
         elapsed_text = f"{elapsed}s"
         
-    fixed_len = len(f"⚡ {model} | ctx {ctx_text} | [] {pct_text} | {time_text} | ⏰{elapsed_text}")
-    available_bar_space = tw - fixed_len - 2
+    def visual_length(s: str) -> int:
+        length = 0
+        for char in s:
+            if char in ("⚡", "⏰", "⚕"):
+                length += 2
+            else:
+                length += 1
+        return length
+
+    fixed_v_len = visual_length(f"⚡ {model} | ctx {ctx_text} | [] {pct_text} | {time_text} | ⏰{elapsed_text}")
+    available_bar_space = tw - fixed_v_len - 2
     bar_width = max(3, min(15, available_bar_space))
     
     num_filled = min(bar_width, int((bar_pct / 100) * bar_width))
@@ -385,12 +394,12 @@ def print_status_bar(model: str, messages: list[dict], last_response_time: float
     bar = "█" * num_filled + "░" * num_empty
     
     raw_status = f"⚡ {model} | ctx {ctx_text} | [{bar}] {pct_text} | {time_text} | ⏰{elapsed_text}"
+    v_len = visual_length(raw_status)
     
-    if len(raw_status) > tw:
-        raw_status = raw_status[:tw]
+    if v_len > tw:
         padding = ""
     else:
-        padding = " " * (tw - len(raw_status))
+        padding = " " * (tw - v_len)
         
     colored_status = (
         f"\033[48;5;236m"
@@ -852,6 +861,8 @@ def handle_usage_cmd(session_prompt_tokens: int, session_completion_tokens: int,
 
 def run_chat(args) -> int:
     print_banner(__version__)
+    print("---")
+    print()
     
     if not check_and_run_setup():
         print("\033[31mError: Chat session cannot start without configuration.\033[0m")
