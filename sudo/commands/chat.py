@@ -21,8 +21,11 @@ from sudo import __version__
 
 
 SYSTEM_PROMPT = (
-    "You are SUDO, an autonomous AI coding assistant running in Android Termux. "
-    "You have full access to the user's workspace, files, and shell. "
+    "You are SUDO, an autonomous AI coding assistant running in Android Termux.\n\n"
+    "CRITICAL CONSTRAINTS (NO BUTTERY TONE):\n"
+    "- Be extremely direct, blunt, and concise. Do NOT use polite filler words, greetings, introductions, or conversational fluff.\n"
+    "- Do NOT explain what you are about to do before calling a tool. Do NOT explain what you did after a tool runs. Just use the tool or answer the question.\n"
+    "- Never say things like 'Here is the file content', 'Certainly, I can help with that', or 'Let's check this'. Output ONLY the tool call tag or the raw answer.\n\n"
     "To interact with the environment, you must use the following XML tags in your response. "
     "Do NOT combine multiple tool calls in a single turn. Only call one tool at a time, wait for the tool output, then decide the next action.\n\n"
     "Available tools:\n"
@@ -30,11 +33,9 @@ SYSTEM_PROMPT = (
     "<tool:read_file path=\"relative/path/to/file\"/>\n\n"
     "2. Write/overwrite a file:\n"
     "<tool:write_file path=\"relative/path/to/file\">\n[file contents]\n</tool:write_file>\n\n"
-    "3. List directory contents:\n"
-    "<tool:list_dir path=\"relative/path/to/dir\"/>\n\n"
-    "4. Delete a file or directory:\n"
+    "3. Delete a file or directory:\n"
     "<tool:delete_file path=\"relative/path/to/file_or_dir\"/>\n\n"
-    "5. Run a shell command:\n"
+    "4. Run a shell command:\n"
     "<tool:run_command cmd=\"command to execute\"/>\n\n"
     "When you run a tool, the output of the tool will be provided to you in the next turn."
 )
@@ -366,7 +367,7 @@ def print_status_bar(model: str, messages: list[dict], last_response_time: float
         pct_text = f"{bar_pct}%"
         
     if last_response_time < 0:
-        time_text = "--s"
+        time_text = "0s"
     else:
         time_text = f"{int(round(last_response_time))}s"
         
@@ -593,16 +594,7 @@ def parse_and_execute_tools(response_text: str) -> tuple[bool, str]:
             
     list_match = re.search(r'<tool:list_dir\s+path=["\'](.*?)["\']\s*/>', response_text)
     if list_match:
-        path = list_match.group(1).strip()
-        try:
-            abs_path = os.path.abspath(path)
-            if not os.path.exists(abs_path):
-                return True, f"[Tool Output Error: Directory {path} does not exist]"
-            files = os.listdir(abs_path)
-            files_str = "\n".join(files)
-            return True, f"[Tool Output for list_dir {path}]:\n{files_str}"
-        except Exception as e:
-            return True, f"[Tool Output Error listing directory: {e}]"
+        return True, "[Tool Output Error: list_dir tool is disabled by user security policy.]"
             
     delete_match = re.search(r'<tool:delete_file\s+path=["\'](.*?)["\']\s*/>', response_text)
     if delete_match:
@@ -1042,8 +1034,20 @@ def run_chat(args) -> int:
                 
                 if had_tool_call:
                     messages.append({"role": "assistant", "content": current_response})
-                    clean_status = tool_output.splitlines()[0] if tool_output.strip() else ""
-                    print(f"\033[36m⚙️ {clean_status[:66]}...\033[0m")
+                    # Check if the output indicates an error/failure
+                    is_error = False
+                    if "error" in tool_output.lower() or "exception" in tool_output.lower():
+                        is_error = True
+                    else:
+                        exit_code_match = re.search(r'exit code:\s*([\-0-9]+)', tool_output, re.IGNORECASE)
+                        if exit_code_match and exit_code_match.group(1) != "0":
+                            is_error = True
+                            
+                    if is_error:
+                        print(f"\033[31m❌ {tool_output.strip()}\033[0m")
+                    else:
+                        clean_status = tool_output.splitlines()[0] if tool_output.strip() else ""
+                        print(f"\033[36m⚙️ {clean_status[:66]}...\033[0m")
                     messages.append({"role": "user", "content": tool_output})
                     save_active_session_messages(active_session_id, messages)
                     continue
