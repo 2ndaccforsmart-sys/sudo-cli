@@ -18,9 +18,24 @@ from sudo import __version__
 
 
 SYSTEM_PROMPT = (
-    "You are SUDO, a helpful AI coding assistant running in Android Termux. "
-    "Provide clear, concise answers optimized for reading on mobile/terminals. "
-    "Always use markdown formatting and highlight code blocks clearly."
+    "You are SUDO, an autonomous AI coding assistant running in Android Termux. "
+    "You have full access to the user's workspace, files, and shell. "
+    "To interact with the environment, you must use the following XML tags in your response. "
+    "Do NOT combine multiple tool calls in a single turn. Only call one tool at a time, wait for the tool output, then decide the next action.\n\n"
+    "Available tools:\n"
+    "1. Read a file:\n"
+    "<tool:read_file path=\"relative/path/to/file\"/>\n\n"
+    "2. Write/overwrite a file:\n"
+    "<tool:write_file path=\"relative/path/to/file\">\n[file contents]\n</tool:write_file>\n\n"
+    "3. List directory contents:\n"
+    "<tool:list_dir path=\"relative/path/to/dir\"/>\n\n"
+    "4. Delete a file or directory:\n"
+    "<tool:delete_file path=\"relative/path/to/file_or_dir\"/>\n\n"
+    "5. Run a shell command:\n"
+    "<tool:run_command cmd=\"command to execute\"/>\n\n"
+    "When you run a tool, the output of the tool will be provided to you in the next turn. "
+    "Always state what you are doing before calling a tool, and keep your explanations brief. "
+    "Do not talk too much; focus on executing tasks."
 )
 
 
@@ -225,10 +240,8 @@ def print_status_bar(model: str, messages: list[dict], last_response_time: float
     else:
         elapsed_text = f"{elapsed}s"
         
-    # Dynamically compute maximum bar width to prevent wrapping on narrow mobile screens (Termux)
-    # Length of all fixed text content (without bar characters)
     fixed_len = len(f"⚡ {model} | ctx {ctx_text} | [] {pct_text} | {time_text} | ⏰{elapsed_text}")
-    available_bar_space = tw - fixed_len - 2 # 2 chars safety padding
+    available_bar_space = tw - fixed_len - 2
     bar_width = max(3, min(15, available_bar_space))
     
     num_filled = min(bar_width, int((bar_pct / 100) * bar_width))
@@ -286,7 +299,6 @@ def check_and_run_setup() -> bool:
     if choice not in ("y", "yes"):
         return False
         
-    # List all 60+ providers in one single alphabetical list
     all_providers = sorted(PROVIDER_REGISTRY.keys())
     print("\nSelect a provider:")
     for idx, p_name in enumerate(all_providers, 1):
@@ -337,7 +349,6 @@ def check_and_run_setup() -> bool:
             print("\033[31mAPI key cannot be empty.\033[0m")
             return False
             
-    # Prompt to select a model
     popular_models = {
         "google/gemini": ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-pro-exp"],
         "groq": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768", "gemma2-9b-it"],
@@ -396,8 +407,87 @@ def check_and_run_setup() -> bool:
     return True
 
 
+def parse_and_execute_tools(response_text: str) -> tuple[bool, str]:
+    """Parses tool calls from response_text and executes them.
+    
+    Returns a tuple: (had_tool_call, result_message)
+    """
+    # 1. Check write_file
+    write_match = re.search(r'<tool:write_file\s+path=["\'](.*?)["\']\s*>(.*?)</tool:write_file>', response_text, re.DOTALL)
+    if write_match:
+        path = write_match.group(1).strip()
+        content = write_match.group(2)
+        try:
+            abs_path = os.path.abspath(path)
+            os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+            with open(abs_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            return True, f"[Tool Output: File written successfully to {path}]"
+        except Exception as e:
+            return True, f"[Tool Output Error writing file: {e}]"
+            
+    # 2. Check read_file
+    read_match = re.search(r'<tool:read_file\s+path=["\'](.*?)["\']\s*/>', response_text)
+    if read_match:
+        path = read_match.group(1).strip()
+        try:
+            abs_path = os.path.abspath(path)
+            if not os.path.exists(abs_path):
+                return True, f"[Tool Output Error: File {path} does not exist]"
+            with open(abs_path, 'r', encoding='utf-8', errors='replace') as f:
+                content = f.read(5000)
+            return True, f"[Tool Output for read_file {path}]:\n{content}"
+        except Exception as e:
+            return True, f"[Tool Output Error reading file: {e}]"
+            
+    # 3. Check list_dir
+    list_match = re.search(r'<tool:list_dir\s+path=["\'](.*?)["\']\s*/>', response_text)
+    if list_match:
+        path = list_match.group(1).strip()
+        try:
+            abs_path = os.path.abspath(path)
+            if not os.path.exists(abs_path):
+                return True, f"[Tool Output Error: Directory {path} does not exist]"
+            files = os.listdir(abs_path)
+            files_str = "\n".join(files)
+            return True, f"[Tool Output for list_dir {path}]:\n{files_str}"
+        except Exception as e:
+            return True, f"[Tool Output Error listing directory: {e}]"
+            
+    # 4. Check delete_file
+    delete_match = re.search(r'<tool:delete_file\s+path=["\'](.*?)["\']\s*/>', response_text)
+    if delete_match:
+        path = delete_match.group(1).strip()
+        try:
+            abs_path = os.path.abspath(path)
+            if os.path.isdir(abs_path):
+                import shutil
+                shutil.rmtree(abs_path)
+                return True, f"[Tool Output: Directory {path} deleted successfully]"
+            elif os.path.exists(abs_path):
+                os.remove(abs_path)
+                return True, f"[Tool Output: File {path} deleted successfully]"
+            else:
+                return True, f"[Tool Output Error: Path {path} does not exist]"
+        except Exception as e:
+            return True, f"[Tool Output Error deleting path: {e}]"
+            
+    # 5. Check run_command
+    cmd_match = re.search(r'<tool:run_command\s+cmd=["\'](.*?)["\']\s*/>', response_text)
+    if cmd_match:
+        cmd = cmd_match.group(1).strip()
+        try:
+            import subprocess
+            res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
+            output = f"Stdout:\n{res.stdout}\nStderr:\n{res.stderr}"
+            return True, f"[Tool Output for run_command '{cmd}']: (Exit Code: {res.returncode})\n{output}"
+        except Exception as e:
+            return True, f"[Tool Output Error executing command: {e}]"
+            
+    return False, ""
+
+
 def run_chat(args) -> int:
-    # Print the ASCII banner at startup as requested
     print_banner(__version__)
     
     if not check_and_run_setup():
@@ -416,8 +506,12 @@ def run_chat(args) -> int:
     session_data = sm.load()
     
     messages = session_data.get("chat_messages", [])
-    if not any(m["role"] == "system" for m in messages):
+    
+    # Always keep system prompt synchronized with tools description
+    if not messages or messages[0].get("role") != "system":
         messages.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
+    else:
+        messages[0]["content"] = SYSTEM_PROMPT
         
     last_response_time = -1.0
     start_time = time.time()
@@ -496,28 +590,56 @@ def run_chat(args) -> int:
                     print(f"\033[31mUnknown command: {cmd}\033[0m\n")
                     continue
             
+            # User input starts the agent turns loop
             messages.append({"role": "user", "content": user_input})
-            print("\033[1mSUDO:\033[0m")
             
             response_start = time.time()
-            full_response = ""
-            try:
-                for chunk in chat_stream(provider, messages):
-                    print(chunk, end="", flush=True)
-                    full_response += chunk
-            except Exception as e:
-                print(f"\n\033[31mError during stream: {e}\033[0m")
-                
-            print()
-            print()
+            max_turns = 10
+            turn = 0
             
+            while turn < max_turns:
+                turn += 1
+                print("\033[1mSUDO:\033[0m")
+                
+                current_response = ""
+                try:
+                    for chunk in chat_stream(provider, messages):
+                        print(chunk, end="", flush=True)
+                        current_response += chunk
+                except Exception as e:
+                    print(f"\n\033[31mError during stream: {e}\033[0m")
+                    break
+                    
+                print()
+                
+                # Check for tool calls
+                had_tool_call, tool_output = parse_and_execute_tools(current_response)
+                
+                if had_tool_call:
+                    # Append assistant's turn with tool call to messages
+                    messages.append({"role": "assistant", "content": current_response})
+                    # Show tool execution status beautifully in terminal
+                    # Truncate output line for clean terminal logs
+                    clean_status = tool_output.splitlines()[0] if tool_output.strip() else ""
+                    print(f"\033[36m⚙️ {clean_status[:66]}...\033[0m")
+                    # Append tool response as user turn
+                    messages.append({"role": "user", "content": tool_output})
+                    # Save messages state
+                    session_data["chat_messages"] = messages
+                    sm.save(session_data)
+                    # Loop back to let the assistant process output
+                    continue
+                else:
+                    # No tool calls made, response is final
+                    if current_response.strip():
+                        messages.append({"role": "assistant", "content": current_response})
+                        session_data["chat_messages"] = messages
+                        sm.save(session_data)
+                    break
+                    
+            print() # Print an extra newline after the agent finished task sequence
             last_response_time = time.time() - response_start
             
-            if full_response.strip():
-                messages.append({"role": "assistant", "content": full_response})
-                session_data["chat_messages"] = messages
-                sm.save(session_data)
-                
         except KeyboardInterrupt:
             print("\nInterrupted.")
             continue
