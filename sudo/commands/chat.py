@@ -227,7 +227,7 @@ def print_status_bar(model: str, messages: list[dict], last_response_time: float
     else:
         elapsed_text = f"{elapsed}s"
         
-    raw_status = f" ⚡ {model} | ctx {ctx_text} | [{bar}] {pct_text} | {time_text} | ⏰{elapsed_text} "
+    raw_status = f"⚡ {model} | ctx {ctx_text} | [{bar}] {pct_text} | {time_text} | ⏰{elapsed_text}"
     
     if len(raw_status) > tw:
         raw_status = raw_status[:tw]
@@ -236,8 +236,8 @@ def print_status_bar(model: str, messages: list[dict], last_response_time: float
         padding = " " * (tw - len(raw_status))
         
     colored_status = (
-        f"\033[48;5;236m "
-        f"\033[38;5;39m⚡\033[38;5;220m {model}\033[0m\033[48;5;236m | "
+        f"\033[48;5;236m"
+        f"\033[38;5;220m⚡ {model}\033[0m\033[48;5;236m | "
         f"ctx \033[38;5;220m{ctx_text}\033[0m\033[48;5;236m | "
         f"[\033[38;5;220m{bar}\033[0m\033[48;5;236m] \033[38;5;220m{pct_text}\033[0m\033[48;5;236m | "
         f"\033[38;5;220m{time_text}\033[0m\033[48;5;236m | "
@@ -249,7 +249,7 @@ def print_status_bar(model: str, messages: list[dict], last_response_time: float
 
 
 def check_and_run_setup() -> bool:
-    """Interactively setup provider and key if not set. Returns True if setup succeeds/is already configured."""
+    """Interactively setup provider, key, and model if not set. Returns True if setup succeeds/is already configured."""
     cfg = load()
     
     has_provider = bool(cfg.provider)
@@ -265,7 +265,7 @@ def check_and_run_setup() -> bool:
         except Exception:
             pass
             
-    if has_provider and has_key:
+    if has_provider and has_key and cfg.model:
         return True
         
     print("\033[33m⚠️  SUDO CLI is not configured yet.\033[0m")
@@ -319,7 +319,6 @@ def check_and_run_setup() -> bool:
         
     defn = PROVIDER_REGISTRY[selected_name]
     print(f"\nSetting up provider: \033[1m{defn.display}\033[0m ({selected_name})")
-    print(f"  Default model: {defn.default_model}")
     print(f"  Get API key at: {defn.docs_url}")
     print(f"  You can set environment variable: {defn.env_key}")
     
@@ -347,9 +346,60 @@ def check_and_run_setup() -> bool:
             print("\033[31mAPI key cannot be empty.\033[0m")
             return False
             
+    # Now prompt to select a model
+    popular_models = {
+        "google/gemini": ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-pro-exp"],
+        "groq": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768", "gemma2-9b-it"],
+        "github": ["gpt-4o", "gpt-4o-mini", "meta-llama-3.1-70b-instruct", "cohere-command-r-plus"],
+        "openrouter": ["openai/gpt-4o", "meta-llama/llama-3.3-70b-instruct", "google/gemini-2.0-flash-exp", "anthropic/claude-3.5-sonnet"],
+        "openai": ["gpt-4o", "gpt-4o-mini", "o1-mini", "o1-preview"],
+        "anthropic": ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest", "claude-3-opus-latest"],
+        "deepseek": ["deepseek-chat", "deepseek-coder"],
+    }
+    
+    suggested = popular_models.get(selected_name, [])
+    selected_model = ""
+    
+    print("\nSelect a model:")
+    if suggested:
+        for idx, m in enumerate(suggested, 1):
+            print(f"  {idx}. {m}")
+        print(f"  {len(suggested)+1}. Custom / Enter manually")
+        
+        try:
+            m_sel = input(f"Choose model (1-{len(suggested)+1}, default 1): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return False
+            
+        if not m_sel:
+            selected_model = suggested[0]
+        elif m_sel.isdigit() and 1 <= int(m_sel) <= len(suggested):
+            selected_model = suggested[int(m_sel)-1]
+        else:
+            try:
+                selected_model = input("Enter model name: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return False
+    else:
+        default_m = defn.default_model if defn else "gpt-4o"
+        try:
+            selected_model = input(f"Enter model name (default {default_m}): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return False
+        if not selected_model:
+            selected_model = default_m
+            
+    if not selected_model:
+        print("\033[31mModel name cannot be empty.\033[0m")
+        return False
+        
     cfg.provider = selected_name
     if api_key:
         cfg.api_key = api_key
+    cfg.model = selected_model
     save(cfg)
     print("\n\033[32m✓ Configuration saved successfully!\033[0m\n")
     return True
@@ -368,14 +418,6 @@ def run_chat(args) -> int:
         print(f"\033[31mError: {e}\033[0m")
         return 1
         
-    print(f"Starting chat session with \033[1m{provider.defn.display}\033[0m.")
-    print("Commands:")
-    print("  /model [name]  Show or change model")
-    print("  /clear         Clear conversation history")
-    print("  /help          Show this message")
-    print("  /exit, /quit   Exit chat")
-    print()
-    
     sm = SessionManager()
     session_data = sm.load()
     
