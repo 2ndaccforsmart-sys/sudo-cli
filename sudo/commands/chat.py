@@ -351,6 +351,11 @@ def print_status_bar(model: str, messages: list[dict], last_response_time: float
     total_chars = sum(len(m["content"]) for m in messages)
     tokens = total_chars // 4
     
+    # Truncate model name to save visual space for the progress bar
+    display_model = model
+    if len(display_model) > 16:
+        display_model = display_model[:13] + "..."
+        
     ctx_limit = get_context_limit(model)
     
     if tokens == 0:
@@ -386,15 +391,15 @@ def print_status_bar(model: str, messages: list[dict], last_response_time: float
                 length += 1
         return length
 
-    fixed_v_len = visual_length(f"⚡ {model} | ctx {ctx_text} | [] {pct_text} | {time_text} | ⏰{elapsed_text}")
+    fixed_v_len = visual_length(f"⚡ {display_model} | ctx {ctx_text} | [] {pct_text} | {time_text} | ⏰{elapsed_text}")
     available_bar_space = tw - fixed_v_len - 2
-    bar_width = max(3, min(15, available_bar_space))
+    bar_width = max(6, min(15, available_bar_space))
     
     num_filled = min(bar_width, int((bar_pct / 100) * bar_width))
     num_empty = bar_width - num_filled
     bar = "█" * num_filled + "░" * num_empty
     
-    raw_status = f"⚡ {model} | ctx {ctx_text} | [{bar}] {pct_text} | {time_text} | ⏰{elapsed_text}"
+    raw_status = f"⚡ {display_model} | ctx {ctx_text} | [{bar}] {pct_text} | {time_text} | ⏰{elapsed_text}"
     v_len = visual_length(raw_status)
     
     if v_len > tw:
@@ -404,9 +409,9 @@ def print_status_bar(model: str, messages: list[dict], last_response_time: float
         
     colored_status = (
         f"\033[48;5;236m"
-        f"\033[38;5;220m⚡ {model}\033[0m\033[48;5;236m | "
+        f"\033[38;5;220m⚡ {display_model}\033[0m\033[48;5;236m | "
         f"ctx \033[38;5;220m{ctx_text}\033[0m\033[48;5;236m | "
-        f"[\033[38;5;220m{'█' * num_filled}\033[0m\033[38;5;242m{'░' * num_empty}\033[0m\033[48;5;236m] \033[38;5;220m{pct_text}\033[0m\033[48;5;236m | "
+        f"[\033[38;5;220m{'█' * num_filled}\033[0m\033[38;5;246m{'░' * num_empty}\033[0m\033[48;5;236m] \033[38;5;220m{pct_text}\033[0m\033[48;5;236m | "
         f"\033[38;5;220m{time_text}\033[0m\033[48;5;236m | "
         f"⏰\033[38;5;220m{elapsed_text}\033[0m\033[48;5;236m{padding}\033[0m"
     )
