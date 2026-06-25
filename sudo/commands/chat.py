@@ -541,7 +541,14 @@ def check_and_run_setup() -> bool:
         cfg.api_key = api_key
     cfg.model = selected_model
     save(cfg)
-    print("\n\033[32m✓ Configuration saved successfully!\033[0m\n")
+    print("\n\033[32m✓ Configuration saved successfully!\033[0m")
+    try:
+        provider = ProviderFactory.create(selected_name, api_key=api_key or os.environ.get(defn.env_key), model=selected_model)
+        status = check_key_billing_status(provider)
+        print(f"  Key Type Detected: \033[32m{status}\033[0m")
+    except Exception:
+        pass
+    print()
     return True
 
 
@@ -771,7 +778,52 @@ def add_cumulative_usage(prompt_tokens: int, completion_tokens: int) -> None:
     sm.save(data)
 
 
-def handle_usage_cmd(session_prompt_tokens: int, session_completion_tokens: int) -> None:
+def check_key_billing_status(provider: BaseProvider) -> str:
+    """Detects if the configured API key is on a free tier or a paid subscription."""
+    name = provider.defn.name
+    api_key = provider.api_key
+    
+    # 1. OpenRouter key details check
+    if name == "openrouter":
+        try:
+            import httpx
+            headers = {"Authorization": f"Bearer {api_key}"}
+            resp = httpx.get("https://openrouter.ai/api/v1/auth/key", headers=headers, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                is_free = data.get("data", {}).get("is_free_tier", False)
+                limit = data.get("data", {}).get("limit", 0)
+                usage = data.get("data", {}).get("usage", 0)
+                if not is_free:
+                    return f"Paid Key (Limit: ${limit:.2f}, Usage: ${usage:.4f})"
+                return "Free Tier Key"
+        except Exception:
+            pass
+            
+    # 2. DeepSeek balance check
+    elif name == "deepseek":
+        try:
+            import httpx
+            headers = {"Authorization": f"Bearer {api_key}"}
+            resp = httpx.get("https://api.deepseek.com/user/balance", headers=headers, timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("is_available"):
+                    infos = data.get("balance_infos", [])
+                    if infos:
+                        total = infos[0].get("total_balance", "0")
+                        return f"Paid Key (Balance: {total} {infos[0].get('currency', 'USD')})"
+        except Exception:
+            pass
+            
+    # 3. Fallback based on registry metadata tier
+    if provider.defn.free_tier:
+        return "Free Tier Provider Key"
+    else:
+        return "Paid Tier Provider Key"
+
+
+def handle_usage_cmd(session_prompt_tokens: int, session_completion_tokens: int, provider: BaseProvider) -> None:
     sm = SessionManager()
     data = sm.load()
     usage = data.get("cumulative_usage", {"prompt_tokens": 0, "completion_tokens": 0})
@@ -781,7 +833,10 @@ def handle_usage_cmd(session_prompt_tokens: int, session_completion_tokens: int)
     session_cost = (session_prompt_tokens * 0.15 + session_completion_tokens * 0.60) / 1000000
     cumulative_cost = (cum_p * 0.15 + cum_c * 0.60) / 1000000
     
+    billing_status = check_key_billing_status(provider)
+    
     print("\n\033[1mLLM Token Usage & Cost Status:\033[0m")
+    print(f"  \033[1mKey Type:\033[0m             {billing_status}")
     print("  \033[1mSession:\033[0m")
     print(f"    Prompt Tokens:      {session_prompt_tokens:,}")
     print(f"    Completion Tokens:  {session_completion_tokens:,}")
@@ -886,7 +941,7 @@ def run_chat(args) -> int:
                     active_session_id, messages = handle_sessions_cmd(cmd_arg, session_data, sm)
                     continue
                 elif cmd == "/usage":
-                    handle_usage_cmd(session_prompt_tokens, session_completion_tokens)
+                    handle_usage_cmd(session_prompt_tokens, session_completion_tokens, provider)
                     continue
                 elif cmd == "/paste":
                     if not cmd_arg:
