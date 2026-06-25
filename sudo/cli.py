@@ -62,7 +62,6 @@ def main(argv: list[str] | None = None) -> int:
 
     if not args.command:
         print_banner(__version__)
-        parser.print_help()
         return 0
 
     try:
