@@ -7,6 +7,9 @@ import sys
 import time
 import re
 import json
+import base64
+import mimetypes
+from pathlib import Path
 from typing import Generator, Any
 
 from sudo.core.config import load, save
@@ -82,15 +85,67 @@ def extract_content(response: dict, api_type: str) -> str:
     return ""
 
 
-def chat_stream(provider: BaseProvider, messages: list[dict], **kwargs) -> Generator[str, None, None]:
-    """Stream chat responses from the provider, fallback to non-stream if needed."""
+def load_multimodal_file(path: str) -> dict[str, str] | None:
+    """Loads and base64-encodes an image or video file."""
+    try:
+        path = path.strip().strip('"').strip("'")
+        if not os.path.exists(path):
+            return None
+        mime_type, _ = mimetypes.guess_type(path)
+        if not mime_type:
+            # Fallback mappings
+            if path.lower().endswith('.mp4'):
+                mime_type = 'video/mp4'
+            elif path.lower().endswith('.png'):
+                mime_type = 'image/png'
+            elif path.lower().endswith('.webp'):
+                mime_type = 'image/webp'
+            elif path.lower().endswith('.gif'):
+                mime_type = 'image/gif'
+            else:
+                mime_type = 'image/jpeg'
+                
+        with open(path, 'rb') as f:
+            data = base64.b64encode(f.read()).decode('utf-8')
+            
+        return {
+            "mime_type": mime_type,
+            "data": data,
+            "path": path
+        }
+    except Exception:
+        return None
+
+
+def chat_stream(provider: BaseProvider, messages: list[dict], usage_stats: dict[str, int], **kwargs) -> Generator[str, None, None]:
+    """Stream chat responses, converting messages to multimodal payloads if attachments are present."""
     api_type = provider.defn.api_type
+    full_response = ""
     
     try:
         import httpx
         
         if api_type == "openai":
-            body = {"model": provider.model, "messages": messages, "stream": True, **kwargs}
+            openai_messages = []
+            for m in messages:
+                role = m["role"]
+                content = m["content"]
+                attachments = m.get("attachments", [])
+                if attachments:
+                    content_blocks = [{"type": "text", "text": content}]
+                    for att in attachments:
+                        if "image" in att["mime_type"]:
+                            content_blocks.append({
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:{att['mime_type']};base64,{att['data']}"
+                                }
+                            })
+                    openai_messages.append({"role": role, "content": content_blocks})
+                else:
+                    openai_messages.append({"role": role, "content": content})
+                    
+            body = {"model": provider.model, "messages": openai_messages, "stream": True, "stream_options": {"include_usage": True}, **kwargs}
             base = provider.base_url.rstrip('/')
             url = f"{base}/chat/completions"
             if base.endswith('/v1'):
@@ -113,23 +168,44 @@ def chat_stream(provider: BaseProvider, messages: list[dict], **kwargs) -> Gener
                             break
                         try:
                             data = json.loads(data_str)
+                            usage = data.get("usage")
+                            if usage:
+                                usage_stats["prompt_tokens"] = usage.get("prompt_tokens", 0)
+                                usage_stats["completion_tokens"] = usage.get("completion_tokens", 0)
                             choices = data.get("choices", [])
                             if choices:
                                 delta = choices[0].get("delta", {})
                                 content = delta.get("content", "")
                                 if content:
+                                    full_response += content
                                     yield content
                         except Exception:
                             pass
                             
         elif api_type == "anthropic":
-            system_msg = None
             anthropic_messages = []
+            system_msg = None
             for m in messages:
                 if m["role"] == "system":
                     system_msg = m["content"]
+                    continue
+                content = m["content"]
+                attachments = m.get("attachments", [])
+                if attachments:
+                    content_blocks = [{"type": "text", "text": content}]
+                    for att in attachments:
+                        if "image" in att["mime_type"]:
+                            content_blocks.append({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": att["mime_type"],
+                                    "data": att["data"]
+                                }
+                            })
+                    anthropic_messages.append({"role": m["role"], "content": content_blocks})
                 else:
-                    anthropic_messages.append({"role": m["role"], "content": m["content"]})
+                    anthropic_messages.append({"role": m["role"], "content": content})
                     
             body = {"model": provider.model, "messages": anthropic_messages, "max_tokens": 4096, "stream": True, **kwargs}
             if system_msg:
@@ -153,14 +229,22 @@ def chat_stream(provider: BaseProvider, messages: list[dict], **kwargs) -> Gener
                         event_name = line[7:].strip()
                     elif line.startswith("data: "):
                         data_str = line[6:].strip()
-                        if event_name == "content_block_delta":
-                            try:
-                                data = json.loads(data_str)
+                        try:
+                            data = json.loads(data_str)
+                            if event_name == "message_start":
+                                usage = data.get("message", {}).get("usage", {})
+                                usage_stats["prompt_tokens"] = usage.get("input_tokens", 0)
+                            elif event_name == "message_delta":
+                                usage = data.get("usage", {})
+                                usage_stats["completion_tokens"] = usage.get("output_tokens", 0)
+                            elif event_name == "content_block_delta":
                                 delta = data.get("delta", {})
                                 if delta.get("type") == "text_delta":
-                                    yield delta.get("text", "")
-                            except Exception:
-                                pass
+                                    text = delta.get("text", "")
+                                    full_response += text
+                                    yield text
+                        except Exception:
+                            pass
                                 
         elif api_type == "google":
             gemini_contents = []
@@ -170,7 +254,15 @@ def chat_stream(provider: BaseProvider, messages: list[dict], **kwargs) -> Gener
                     system_text = m["content"]
                     continue
                 role = "user" if m["role"] == "user" else "model"
-                gemini_contents.append({"role": role, "parts": [{"text": m["content"]}]})
+                parts = [{"text": m["content"]}]
+                for att in m.get("attachments", []):
+                    parts.append({
+                        "inline_data": {
+                            "mime_type": att["mime_type"],
+                            "data": att["data"]
+                        }
+                    })
+                gemini_contents.append({"role": role, "parts": parts})
                 
             body = {"contents": gemini_contents, **kwargs}
             if system_text:
@@ -186,6 +278,16 @@ def chat_stream(provider: BaseProvider, messages: list[dict], **kwargs) -> Gener
                 buffer = ""
                 for chunk in resp.iter_text():
                     buffer += chunk
+                    # Parse usage metadata if returned inside stream
+                    try:
+                        matches_usage = re.findall(r'"usageMetadata"\s*:\s*(\{.*?\})', buffer, re.DOTALL)
+                        if matches_usage:
+                            meta = json.loads(matches_usage[-1])
+                            usage_stats["prompt_tokens"] = meta.get("promptTokenCount", 0)
+                            usage_stats["completion_tokens"] = meta.get("candidatesTokenCount", 0)
+                    except Exception:
+                        pass
+                        
                     matches = list(re.finditer(r'"text"\s*:\s*"((?:[^"\\]|\\.)*)"', buffer))
                     if matches:
                         for match in matches:
@@ -194,18 +296,54 @@ def chat_stream(provider: BaseProvider, messages: list[dict], **kwargs) -> Gener
                                 text_val = json.loads(f'"{text_val}"')
                             except Exception:
                                 pass
+                            full_response += text_val
                             yield text_val
                         buffer = buffer[matches[-1].end():]
         else:
             res = provider.chat(messages, **kwargs)
-            yield extract_content(res, api_type)
+            text = extract_content(res, api_type)
+            full_response += text
+            yield text
             
     except Exception as e:
+        # Fallback to non-stream call inside generator if stream errors out
         try:
             res = provider.chat(messages, **kwargs)
-            yield extract_content(res, api_type)
+            text = extract_content(res, api_type)
+            usage = parse_usage(res, api_type)
+            usage_stats["prompt_tokens"] = usage[0]
+            usage_stats["completion_tokens"] = usage[1]
+            full_response += text
+            yield text
         except Exception as inner_e:
             yield f"\n[Streaming error: {e}. Fallback error: {inner_e}]"
+            
+    # Standard fallback token estimation if provider returns 0 tokens
+    if usage_stats.get("prompt_tokens", 0) == 0:
+        total_chars = sum(len(m["content"]) for m in messages)
+        usage_stats["prompt_tokens"] = total_chars // 4
+    if usage_stats.get("completion_tokens", 0) == 0:
+        usage_stats["completion_tokens"] = len(full_response) // 4
+
+
+def parse_usage(response: dict, api_type: str) -> tuple[int, int]:
+    p_tok, c_tok = 0, 0
+    try:
+        if api_type == "google":
+            meta = response.get("usageMetadata", {})
+            p_tok = meta.get("promptTokenCount", 0)
+            c_tok = meta.get("candidatesTokenCount", 0)
+        elif api_type == "anthropic":
+            usage = response.get("usage", {})
+            p_tok = usage.get("input_tokens", 0)
+            c_tok = usage.get("output_tokens", 0)
+        else:
+            usage = response.get("usage", {})
+            p_tok = usage.get("prompt_tokens", 0)
+            c_tok = usage.get("completion_tokens", 0)
+    except Exception:
+        pass
+    return p_tok, c_tok
 
 
 def print_status_bar(model: str, messages: list[dict], last_response_time: float, start_time: float) -> None:
@@ -412,7 +550,6 @@ def parse_and_execute_tools(response_text: str) -> tuple[bool, str]:
     
     Returns a tuple: (had_tool_call, result_message)
     """
-    # 1. Check write_file
     write_match = re.search(r'<tool:write_file\s+path=["\'](.*?)["\']\s*>(.*?)</tool:write_file>', response_text, re.DOTALL)
     if write_match:
         path = write_match.group(1).strip()
@@ -426,7 +563,6 @@ def parse_and_execute_tools(response_text: str) -> tuple[bool, str]:
         except Exception as e:
             return True, f"[Tool Output Error writing file: {e}]"
             
-    # 2. Check read_file
     read_match = re.search(r'<tool:read_file\s+path=["\'](.*?)["\']\s*/>', response_text)
     if read_match:
         path = read_match.group(1).strip()
@@ -440,7 +576,6 @@ def parse_and_execute_tools(response_text: str) -> tuple[bool, str]:
         except Exception as e:
             return True, f"[Tool Output Error reading file: {e}]"
             
-    # 3. Check list_dir
     list_match = re.search(r'<tool:list_dir\s+path=["\'](.*?)["\']\s*/>', response_text)
     if list_match:
         path = list_match.group(1).strip()
@@ -454,7 +589,6 @@ def parse_and_execute_tools(response_text: str) -> tuple[bool, str]:
         except Exception as e:
             return True, f"[Tool Output Error listing directory: {e}]"
             
-    # 4. Check delete_file
     delete_match = re.search(r'<tool:delete_file\s+path=["\'](.*?)["\']\s*/>', response_text)
     if delete_match:
         path = delete_match.group(1).strip()
@@ -472,7 +606,6 @@ def parse_and_execute_tools(response_text: str) -> tuple[bool, str]:
         except Exception as e:
             return True, f"[Tool Output Error deleting path: {e}]"
             
-    # 5. Check run_command
     cmd_match = re.search(r'<tool:run_command\s+cmd=["\'](.*?)["\']\s*/>', response_text)
     if cmd_match:
         cmd = cmd_match.group(1).strip()
@@ -486,6 +619,183 @@ def parse_and_execute_tools(response_text: str) -> tuple[bool, str]:
             
     return False, ""
 
+
+# ── Chat Session Persistence Helpers ─────────────────────────────────────────
+
+def get_sessions_dir() -> Path:
+    sm = SessionManager()
+    d = sm.state_dir / "sessions"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def get_active_session_id() -> str:
+    sm = SessionManager()
+    data = sm.load()
+    if "active_session_id" not in data:
+        data["active_session_id"] = f"session_{int(time.time())}"
+        sm.save(data)
+    return data["active_session_id"]
+
+
+def load_active_session_messages(session_id: str) -> list[dict]:
+    s_dir = get_sessions_dir()
+    s_file = s_dir / f"{session_id}.json"
+    if s_file.exists():
+        try:
+            with open(s_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return data.get("messages", [])
+        except Exception:
+            pass
+    return []
+
+
+def save_active_session_messages(session_id: str, messages: list[dict]) -> None:
+    s_dir = get_sessions_dir()
+    s_file = s_dir / f"{session_id}.json"
+    try:
+        with open(s_file, 'w', encoding='utf-8') as f:
+            json.dump({"messages": messages, "timestamp": time.time()}, f, indent=2)
+    except Exception:
+        pass
+
+
+def handle_sessions_cmd(cmd_arg: str, session_data: dict, sm: SessionManager) -> tuple[str, list[dict]]:
+    """Handles sessions commands. Returns (active_session_id, messages)."""
+    s_dir = get_sessions_dir()
+    active_session_id = session_data.get("active_session_id", get_active_session_id())
+    
+    files = sorted(s_dir.glob("session_*.json"), key=lambda f: f.stat().st_mtime)
+    
+    if not cmd_arg:
+        print("\n\033[1mSaved Chat Sessions:\033[0m")
+        if not files:
+            print("  (no saved sessions)")
+        else:
+            for idx, f in enumerate(files, 1):
+                s_id = f.stem
+                is_active = " \033[32m[Active]\033[0m" if s_id == active_session_id else ""
+                try:
+                    with open(f, 'r', encoding='utf-8') as sf:
+                        s_data = json.load(sf)
+                        msgs = s_data.get("messages", [])
+                except Exception:
+                    msgs = []
+                first_query = ""
+                for m in msgs:
+                    if m["role"] == "user":
+                        first_query = m["content"]
+                        break
+                summary = first_query[:40] + "..." if len(first_query) > 40 else (first_query or "(empty session)")
+                m_count = len(msgs)
+                mtime = time.strftime('%Y-%m-%d %H:%M', time.localtime(f.stat().st_mtime))
+                print(f"  {idx:2d}. {mtime} | {m_count:2d} msgs | {summary}{is_active}")
+        print("\nCommands:")
+        print("  /sessions load <num>   Load a session")
+        print("  /sessions new          Start a new session")
+        print("  /sessions delete <num> Delete a session")
+        print()
+        return active_session_id, load_active_session_messages(active_session_id)
+        
+    cmd_parts = cmd_arg.split(None, 1)
+    sub = cmd_parts[0].lower()
+    sub_arg = cmd_parts[1].strip() if len(cmd_parts) > 1 else ""
+    
+    if sub == "new":
+        active_session_id = f"session_{int(time.time())}"
+        session_data["active_session_id"] = active_session_id
+        sm.save(session_data)
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        save_active_session_messages(active_session_id, messages)
+        print(f"\033[32mStarted new session: {active_session_id}\033[0m\n")
+        return active_session_id, messages
+        
+    elif sub == "load":
+        if not sub_arg.isdigit():
+            print("\033[31mError: Provide a valid session number.\033[0m\n")
+            return active_session_id, load_active_session_messages(active_session_id)
+        idx = int(sub_arg)
+        if 1 <= idx <= len(files):
+            active_session_id = files[idx-1].stem
+            session_data["active_session_id"] = active_session_id
+            sm.save(session_data)
+            messages = load_active_session_messages(active_session_id)
+            print(f"\033[32mLoaded session: {active_session_id}\033[0m\n")
+            return active_session_id, messages
+        else:
+            print("\033[31mError: Session index out of range.\033[0m\n")
+            
+    elif sub == "delete":
+        if not sub_arg.isdigit():
+            print("\033[31mError: Provide a valid session number to delete.\033[0m\n")
+            return active_session_id, load_active_session_messages(active_session_id)
+        idx = int(sub_arg)
+        if 1 <= idx <= len(files):
+            target_file = files[idx-1]
+            target_id = target_file.stem
+            try:
+                os.remove(target_file)
+                print(f"\033[32mDeleted session: {target_id}\033[0m")
+            except Exception as e:
+                print(f"\033[31mError deleting session: {e}\033[0m")
+            if target_id == active_session_id:
+                remaining_files = sorted(s_dir.glob("session_*.json"), key=lambda f: f.stat().st_mtime)
+                if remaining_files:
+                    active_session_id = remaining_files[-1].stem
+                else:
+                    active_session_id = f"session_{int(time.time())}"
+                session_data["active_session_id"] = active_session_id
+                sm.save(session_data)
+                messages = load_active_session_messages(active_session_id)
+                if not messages:
+                    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+                    save_active_session_messages(active_session_id, messages)
+                print(f"\033[32mSwitched active session to: {active_session_id}\033[0m\n")
+                return active_session_id, messages
+            print()
+        else:
+            print("\033[31mError: Session index out of range.\033[0m\n")
+    else:
+        print(f"\033[31mUnknown sessions subcommand: {sub}\033[0m\n")
+        
+    return active_session_id, load_active_session_messages(active_session_id)
+
+
+def add_cumulative_usage(prompt_tokens: int, completion_tokens: int) -> None:
+    sm = SessionManager()
+    data = sm.load()
+    usage = data.setdefault("cumulative_usage", {"prompt_tokens": 0, "completion_tokens": 0})
+    usage["prompt_tokens"] = usage.get("prompt_tokens", 0) + prompt_tokens
+    usage["completion_tokens"] = usage.get("completion_tokens", 0) + completion_tokens
+    sm.save(data)
+
+
+def handle_usage_cmd(session_prompt_tokens: int, session_completion_tokens: int) -> None:
+    sm = SessionManager()
+    data = sm.load()
+    usage = data.get("cumulative_usage", {"prompt_tokens": 0, "completion_tokens": 0})
+    cum_p = usage.get("prompt_tokens", 0)
+    cum_c = usage.get("completion_tokens", 0)
+    
+    session_cost = (session_prompt_tokens * 0.15 + session_completion_tokens * 0.60) / 1000000
+    cumulative_cost = (cum_p * 0.15 + cum_c * 0.60) / 1000000
+    
+    print("\n\033[1mLLM Token Usage & Cost Status:\033[0m")
+    print("  \033[1mSession:\033[0m")
+    print(f"    Prompt Tokens:      {session_prompt_tokens:,}")
+    print(f"    Completion Tokens:  {session_completion_tokens:,}")
+    print(f"    Total Tokens:       {session_prompt_tokens + session_completion_tokens:,}")
+    print(f"    Estimated Cost:     ${session_cost:.6f}")
+    print("  \033[1mCumulative (Project):\033[0m")
+    print(f"    Prompt Tokens:      {cum_p:,}")
+    print(f"    Completion Tokens:  {cum_c:,}")
+    print(f"    Total Tokens:       {cum_p + cum_c:,}")
+    print(f"    Estimated Cost:     ${cumulative_cost:.6f}")
+    print()
+
+
+# ── Main Session Execution Loop ──────────────────────────────────────────────
 
 def run_chat(args) -> int:
     print_banner(__version__)
@@ -505,16 +815,28 @@ def run_chat(args) -> int:
     sm = SessionManager()
     session_data = sm.load()
     
-    messages = session_data.get("chat_messages", [])
+    # Load or initialize the active session and messages
+    active_session_id = session_data.get("active_session_id") or get_active_session_id()
+    session_data["active_session_id"] = active_session_id
+    sm.save(session_data)
     
-    # Always keep system prompt synchronized with tools description
-    if not messages or messages[0].get("role") != "system":
-        messages.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
-    else:
-        messages[0]["content"] = SYSTEM_PROMPT
+    messages = load_active_session_messages(active_session_id)
+    if not messages:
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        save_active_session_messages(active_session_id, messages)
         
+    # Synchronize system prompt tools definitions
+    messages[0]["content"] = SYSTEM_PROMPT
+    
     last_response_time = -1.0
     start_time = time.time()
+    
+    # Current session tokens tracking
+    session_prompt_tokens = 0
+    session_completion_tokens = 0
+    
+    # Session attachments staging
+    current_attachments: list[dict[str, str]] = []
     
     try:
         import readline
@@ -544,18 +866,38 @@ def run_chat(args) -> int:
                     break
                 elif cmd == "/clear":
                     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-                    session_data["chat_messages"] = messages
-                    sm.save(session_data)
+                    save_active_session_messages(active_session_id, messages)
                     last_response_time = -1.0
+                    current_attachments.clear()
                     print("\033[32mConversation history cleared.\033[0m\n")
                     continue
                 elif cmd == "/help":
                     print("Commands:")
-                    print("  /model [name]  Show or change model")
-                    print("  /clear         Clear conversation history")
-                    print("  /help          Show this message")
-                    print("  /exit, /quit   Exit chat")
+                    print("  /model [name]    Show or change model")
+                    print("  /clear           Clear conversation history")
+                    print("  /sessions [cmd]  Manage sessions (load, new, delete)")
+                    print("  /usage           Show token usage and cost stats")
+                    print("  /paste <path>    Attach an image/video to the next message")
+                    print("  /help            Show this message")
+                    print("  /exit, /quit     Exit chat")
                     print()
+                    continue
+                elif cmd == "/sessions":
+                    active_session_id, messages = handle_sessions_cmd(cmd_arg, session_data, sm)
+                    continue
+                elif cmd == "/usage":
+                    handle_usage_cmd(session_prompt_tokens, session_completion_tokens)
+                    continue
+                elif cmd == "/paste":
+                    if not cmd_arg:
+                        print("\033[31mError: Provide a valid file path. Usage: /paste <path_to_file>\033[0m\n")
+                        continue
+                    attachment = load_multimodal_file(cmd_arg)
+                    if attachment:
+                        current_attachments.append(attachment)
+                        print(f"\033[32m📎 Attached {attachment['path']} ({attachment['mime_type']})\033[0m\n")
+                    else:
+                        print(f"\033[31mError: Could not load or find file '{cmd_arg}'\033[0m\n")
                     continue
                 elif cmd == "/model":
                     if not cmd_arg:
@@ -590,8 +932,23 @@ def run_chat(args) -> int:
                     print(f"\033[31mUnknown command: {cmd}\033[0m\n")
                     continue
             
-            # User input starts the agent turns loop
-            messages.append({"role": "user", "content": user_input})
+            # Scrape prompt text for any file paths ending in popular image/video extensions
+            detected_paths = re.findall(r'(?:[a-zA-Z]:[\\/]|[\\/])?[\w\-.\\/]+\.(?:png|jpe?g|webp|gif|mp4|mov|avi|mkv)', user_input)
+            for path in detected_paths:
+                if os.path.exists(path):
+                    # Attach if not already staged
+                    if not any(att["path"] == path for att in current_attachments):
+                        attachment = load_multimodal_file(path)
+                        if attachment:
+                            current_attachments.append(attachment)
+                            print(f"\033[32m📎 Auto-attached detected file: {path} ({attachment['mime_type']})\033[0m")
+                            
+            # Add message with staged attachments
+            user_msg = {"role": "user", "content": user_input}
+            if current_attachments:
+                user_msg["attachments"] = list(current_attachments)
+                current_attachments.clear()
+            messages.append(user_msg)
             
             response_start = time.time()
             max_turns = 10
@@ -602,8 +959,9 @@ def run_chat(args) -> int:
                 print("\033[1mSUDO:\033[0m")
                 
                 current_response = ""
+                usage_stats = {"prompt_tokens": 0, "completion_tokens": 0}
                 try:
-                    for chunk in chat_stream(provider, messages):
+                    for chunk in chat_stream(provider, messages, usage_stats=usage_stats):
                         print(chunk, end="", flush=True)
                         current_response += chunk
                 except Exception as e:
@@ -612,32 +970,27 @@ def run_chat(args) -> int:
                     
                 print()
                 
-                # Check for tool calls
+                # Accumulate tokens
+                session_prompt_tokens += usage_stats["prompt_tokens"]
+                session_completion_tokens += usage_stats["completion_tokens"]
+                add_cumulative_usage(usage_stats["prompt_tokens"], usage_stats["completion_tokens"])
+                
                 had_tool_call, tool_output = parse_and_execute_tools(current_response)
                 
                 if had_tool_call:
-                    # Append assistant's turn with tool call to messages
                     messages.append({"role": "assistant", "content": current_response})
-                    # Show tool execution status beautifully in terminal
-                    # Truncate output line for clean terminal logs
                     clean_status = tool_output.splitlines()[0] if tool_output.strip() else ""
                     print(f"\033[36m⚙️ {clean_status[:66]}...\033[0m")
-                    # Append tool response as user turn
                     messages.append({"role": "user", "content": tool_output})
-                    # Save messages state
-                    session_data["chat_messages"] = messages
-                    sm.save(session_data)
-                    # Loop back to let the assistant process output
+                    save_active_session_messages(active_session_id, messages)
                     continue
                 else:
-                    # No tool calls made, response is final
                     if current_response.strip():
                         messages.append({"role": "assistant", "content": current_response})
-                        session_data["chat_messages"] = messages
-                        sm.save(session_data)
+                        save_active_session_messages(active_session_id, messages)
                     break
                     
-            print() # Print an extra newline after the agent finished task sequence
+            print()
             last_response_time = time.time() - response_start
             
         except KeyboardInterrupt:
