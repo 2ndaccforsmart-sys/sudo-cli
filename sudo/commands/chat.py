@@ -13,6 +13,8 @@ from sudo.core.config import load, save
 from sudo.core.provider import PROVIDER_REGISTRY, ProviderFactory, BaseProvider
 from sudo.core.session import SessionManager
 from sudo.utils.output import terminal_width
+from sudo.utils.banner import print_banner
+from sudo import __version__
 
 
 SYSTEM_PROMPT = (
@@ -212,10 +214,6 @@ def print_status_bar(model: str, messages: list[dict], last_response_time: float
         bar_pct = min(100, int((tokens / ctx_limit) * 100))
         pct_text = f"{bar_pct}%"
         
-    num_filled = min(15, int((bar_pct / 100) * 15))
-    num_empty = 15 - num_filled
-    bar = "█" * num_filled + "░" * num_empty
-    
     if last_response_time < 0:
         time_text = "--s"
     else:
@@ -227,6 +225,16 @@ def print_status_bar(model: str, messages: list[dict], last_response_time: float
     else:
         elapsed_text = f"{elapsed}s"
         
+    # Dynamically compute maximum bar width to prevent wrapping on narrow mobile screens (Termux)
+    # Length of all fixed text content (without bar characters)
+    fixed_len = len(f"⚡ {model} | ctx {ctx_text} | [] {pct_text} | {time_text} | ⏰{elapsed_text}")
+    available_bar_space = tw - fixed_len - 2 # 2 chars safety padding
+    bar_width = max(3, min(15, available_bar_space))
+    
+    num_filled = min(bar_width, int((bar_pct / 100) * bar_width))
+    num_empty = bar_width - num_filled
+    bar = "█" * num_filled + "░" * num_empty
+    
     raw_status = f"⚡ {model} | ctx {ctx_text} | [{bar}] {pct_text} | {time_text} | ⏰{elapsed_text}"
     
     if len(raw_status) > tw:
@@ -278,43 +286,26 @@ def check_and_run_setup() -> bool:
     if choice not in ("y", "yes"):
         return False
         
-    popular = [
-        ("google/gemini", "Google Gemini (Free tier available)"),
-        ("groq", "Groq (Free tier available)"),
-        ("github", "GitHub Models (Free with Copilot subscription)"),
-        ("openrouter", "OpenRouter (Multi-model hub with free models)"),
-        ("openai", "OpenAI (GPT-4o, etc.)"),
-        ("anthropic", "Anthropic (Claude Sonnet, etc.)"),
-        ("deepseek", "DeepSeek (Chat & Coder)"),
-    ]
-    
+    # List all 60+ providers in one single alphabetical list
+    all_providers = sorted(PROVIDER_REGISTRY.keys())
     print("\nSelect a provider:")
-    for idx, (name, desc) in enumerate(popular, 1):
-        print(f"  {idx}. {desc} [{name}]")
-    print("  8. Custom / Other provider")
-    
+    for idx, p_name in enumerate(all_providers, 1):
+        defn = PROVIDER_REGISTRY[p_name]
+        print(f"  {idx:2d}. {defn.display} ({p_name})")
+        
     try:
-        sel = input("Choose option (1-8): ").strip()
+        sel = input(f"\nChoose option (1-{len(all_providers)}) or enter provider name: ").strip()
     except (KeyboardInterrupt, EOFError):
         print()
         return False
         
     selected_name = ""
-    if sel.isdigit() and 1 <= int(sel) <= 7:
-        selected_name = popular[int(sel)-1][0]
-    elif sel == "8":
-        try:
-            selected_name = input("Enter provider name (e.g. ollama, together): ").strip()
-        except (KeyboardInterrupt, EOFError):
-            print()
-            return False
+    if sel.isdigit() and 1 <= int(sel) <= len(all_providers):
+        selected_name = all_providers[int(sel)-1]
+    elif sel in PROVIDER_REGISTRY:
+        selected_name = sel
     else:
         print("\033[31mInvalid selection.\033[0m")
-        return False
-        
-    if selected_name not in PROVIDER_REGISTRY:
-        print(f"\033[31mProvider '{selected_name}' is not in the registry.\033[0m")
-        print("Please check available providers using 'sudo provider list'.")
         return False
         
     defn = PROVIDER_REGISTRY[selected_name]
@@ -346,7 +337,7 @@ def check_and_run_setup() -> bool:
             print("\033[31mAPI key cannot be empty.\033[0m")
             return False
             
-    # Now prompt to select a model
+    # Prompt to select a model
     popular_models = {
         "google/gemini": ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-pro-exp"],
         "groq": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768", "gemma2-9b-it"],
@@ -406,6 +397,9 @@ def check_and_run_setup() -> bool:
 
 
 def run_chat(args) -> int:
+    # Print the ASCII banner at startup as requested
+    print_banner(__version__)
+    
     if not check_and_run_setup():
         print("\033[31mError: Chat session cannot start without configuration.\033[0m")
         return 1
