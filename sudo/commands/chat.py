@@ -410,6 +410,7 @@ def print_status_bar(model: str, messages: list[dict], last_response_time: float
         f"⏰\033[38;5;220m{elapsed_text}\033[0m\033[48;5;236m{padding}\033[0m"
     )
     
+    print("\033[38;5;208m" + "─" * tw + "\033[0m")
     print(colored_status)
     print("\033[38;5;208m" + "─" * tw + "\033[0m")
 
@@ -861,8 +862,6 @@ def handle_usage_cmd(session_prompt_tokens: int, session_completion_tokens: int,
 
 def run_chat(args) -> int:
     print_banner(__version__)
-    print("---")
-    print()
     
     if not check_and_run_setup():
         print("\033[31mError: Chat session cannot start without configuration.\033[0m")
