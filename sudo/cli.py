@@ -49,20 +49,31 @@ def _register_commands(subparsers) -> None:
     import sudo.commands.status as cmd_status
     import sudo.commands.find as cmd_find
     import sudo.commands.grep as cmd_grep
+    import sudo.commands.chat as cmd_chat
 
     cmd_provider.register(subparsers)
     cmd_status.register(subparsers)
     cmd_find.register(subparsers)
     cmd_grep.register(subparsers)
+    cmd_chat.register(subparsers)
 
 
 def main(argv: list[str] | None = None) -> int:
+    if sys.platform.startswith("win"):
+        try:
+            sys.stdout.reconfigure(encoding='utf-8')
+            sys.stderr.reconfigure(encoding='utf-8')
+        except Exception:
+            pass
+
     parser = build_parser()
     args = parser.parse_args(argv)
 
     if not args.command:
-        print_banner(__version__)
-        return 0
+        from sudo.commands.chat import run_chat
+        class MockArgs:
+            pass
+        return run_chat(MockArgs())
 
     try:
         args.func(args)

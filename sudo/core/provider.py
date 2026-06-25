@@ -447,14 +447,15 @@ assert len(PROVIDER_REGISTRY) >= 60, f"Only {len(PROVIDER_REGISTRY)} providers"
 class BaseProvider(ABC):
     """Abstract base class for all LLM providers."""
 
-    def __init__(self, defn: ProviderDef, api_key: str, model: Optional[str] = None):
+    def __init__(self, defn: ProviderDef, api_key: str, model: Optional[str] = None, base_url: Optional[str] = None):
         self.defn = defn
         self.api_key = api_key
         self.model = model or defn.default_model
+        self.custom_base_url = base_url
         self.base_url = self._resolve_base_url()
 
     def _resolve_base_url(self) -> str:
-        return self.defn.base_url
+        return self.custom_base_url or self.defn.base_url
 
     @abstractmethod
     def chat(self, messages: list[dict], **kwargs) -> dict[str, Any]:
@@ -470,7 +471,11 @@ class OpenAICompatibleProvider(BaseProvider):
 
     def _request(self, method: str, endpoint: str, json_body: Optional[dict] = None) -> Any:
         import httpx
-        url = f"{self.base_url.rstrip('/')}/{endpoint.lstrip('/')}"
+        base = self.base_url.rstrip('/')
+        end = endpoint.lstrip('/')
+        if base.endswith('/v1') and end.startswith('v1/'):
+            end = end[3:]
+        url = f"{base}/{end}"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -552,7 +557,8 @@ class GeminiProvider(BaseProvider):
     """Provider using Google Gemini API format."""
 
     def _resolve_base_url(self) -> str:
-        return self.defn.base_url.rstrip("/")
+        base = self.custom_base_url or self.defn.base_url
+        return base.rstrip("/")
 
     def _request(self, endpoint: str, json_body: dict) -> dict[str, Any]:
         import httpx
