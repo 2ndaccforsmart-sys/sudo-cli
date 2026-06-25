@@ -9,6 +9,7 @@ import argparse
 import sys
 
 from sudo import __version__
+from sudo.utils.banner import print_banner
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -18,19 +19,19 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  sudo provider list           List all 60+ providers
-  sudo provider set groq       Set active provider
-  sudo provider key sk-xxx     Save API key
-  sudo provider test           Test current provider
-  sudo status                  Show project summary
-  sudo find *.py               Find Python files
-  sudo find --code "def "      Find matches in source files
-  sudo grep "class "           Search for class definitions
-  sudo --help                  Show this help
+  sudo-cli provider list        List all 60+ providers
+  sudo-cli provider set groq    Set active provider
+  sudo-cli provider key sk-xxx  Save API key
+  sudo-cli provider test        Test current provider
+  sudo-cli status               Show project summary
+  sudo-cli find *.py            Find Python files
+  sudo-cli grep "class "        Search for class definitions
+  sudo-cli --help               Show this help
         """,
     )
 
-    parser.add_argument("--version", action="version", version=f"sudoc {__version__}")
+    parser.add_argument("--version", action="version", version=f"sudoc {__version__}",
+                        help="Show version and exit")
     parser.add_argument("--detail", action="store_true", help="Expand output with more detail")
     parser.add_argument("--json", action="store_true", help="Output in JSON format")
 
@@ -60,6 +61,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if not args.command:
+        print_banner(__version__)
         parser.print_help()
         return 0
 
