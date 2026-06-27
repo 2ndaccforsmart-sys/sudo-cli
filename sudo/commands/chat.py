@@ -959,7 +959,28 @@ def run_chat(args) -> int:
         from prompt_toolkit.history import InMemoryHistory
         from prompt_toolkit.key_binding import KeyBindings
 
-        COMMANDS_WORDS = ["/connect", "/model", "/clear", "/sessions", "/usage", "/paste", "/help", "/exit", "/quit"]
+        COMMANDS_META = {
+            "/connect":   "Switch provider and/or model interactively (usage: /connect [provider] [model])",
+            "/model":     "Show or change the current model (usage: /model [name])",
+            "/new":       "Start a new session (fresh session ID + history) (usage: /new [name])",
+            "/reset":     "Start a new session (fresh session ID + history) (alias for /new)",
+            "/clear":     "Clear conversation history for current session",
+            "/sessions":  "Manage sessions: list, load, new, delete, export, import (usage: /sessions [cmd])",
+            "/usage":     "Show token usage and cost stats for this session",
+            "/paste":     "Attach an image/video to the next message (usage: /paste <path>)",
+            "/save":      "Save the current conversation",
+            "/retry":     "Retry the last message (resend to agent)",
+            "/undo":      "Back up N user turns and re-prompt (default 1) (usage: /undo [N])",
+            "/title":     "Set a title for the current session (usage: /title [name])",
+            "/handoff":   "Hand off this session to a messaging platform (Telegram, Discord, etc.)",
+            "/branch":    "Branch the current session (explore a different path) (usage: /branch [name])",
+            "/fork":      "Branch the current session (explore a different path) (alias for /branch)",
+            "/history":   "Show conversation history",
+            "/redraw":    "Force a full UI repaint (recovers from terminal drift)",
+            "/help":      "Show this help message",
+            "/exit":      "Exit the chat session",
+            "/quit":      "Exit the chat session (alias for /exit)",
+        }
 
         class _CommandCompleter(FuzzyWordCompleter):
             def get_completions(self, document, complete_event):
@@ -968,7 +989,11 @@ def run_chat(args) -> int:
                     return
                 yield from super().get_completions(document, complete_event)
 
-        _completer = _CommandCompleter(COMMANDS_WORDS, display_dict={c: c for c in COMMANDS_WORDS})
+        _completer = _CommandCompleter(
+            list(COMMANDS_META.keys()),
+            display_dict={c: c for c in COMMANDS_META},
+            meta_dict=COMMANDS_META,
+        )
         _completer.WORD = True
 
         _session = PromptSession(completer=_completer, history=InMemoryHistory(), complete_while_typing=True)
@@ -1048,14 +1073,25 @@ def run_chat(args) -> int:
                     current_attachments.clear()
                     print("\033[32mConversation history cleared.\033[0m\n")
                     continue
-                elif cmd == "/help":
+                elif cmd in ("/help", "/h"):
                     print("Commands:")
-                    print("  /connect [provider] [model]  Switch provider and/or model")
+                    print("  /new [name]      Start a new session (fresh session ID + history)")
+                    print("  /reset           Start a new session (alias for /new)")
+                    print("  /clear           Clear conversation history for current session")
+                    print("  /connect [p] [m] Switch provider and/or model")
                     print("  /model [name]    Show or change model")
-                    print("  /clear           Clear conversation history")
-                    print("  /sessions [cmd]  Manage sessions (load, new, delete)")
+                    print("  /sessions [cmd]  Manage sessions (list, load, new, delete, export, import)")
                     print("  /usage           Show token usage and cost stats")
                     print("  /paste <path>    Attach an image/video to the next message")
+                    print("  /save            Save the current conversation to a file")
+                    print("  /retry           Retry the last message (resend to agent)")
+                    print("  /undo [N]        Back up N user turns and re-prompt (default 1)")
+                    print("  /title [name]    Set a title for the current session")
+                    print("  /history         Show conversation history")
+                    print("  /redraw          Force a full UI repaint (recovers from terminal drift)")
+                    print("  /handoff         Hand off this session to a messaging platform")
+                    print("  /branch [name]   Branch the current session (explore a different path)")
+                    print("  /fork            Branch the current session (alias for /branch)")
                     print("  /help            Show this message")
                     print("  /exit, /quit     Exit chat")
                     print()
@@ -1076,6 +1112,99 @@ def run_chat(args) -> int:
                         print(f"\033[32m📎 Attached {attachment['path']} ({attachment['mime_type']})\033[0m\n")
                     else:
                         print(f"\033[31mError: Could not load or find file '{cmd_arg}'\033[0m\n")
+                    continue
+                elif cmd in ("/new", "/reset"):
+                    active_session_id = f"session_{int(time.time())}"
+                    session_data["active_session_id"] = active_session_id
+                    sm.save(session_data)
+                    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+                    save_active_session_messages(active_session_id, messages)
+                    last_response_time = -1.0
+                    current_attachments.clear()
+                    session_prompt_tokens = 0
+                    session_completion_tokens = 0
+                    if cmd_arg:
+                        session_data[active_session_id + "_title"] = cmd_arg
+                        sm.save(session_data)
+                        print(f"\033[32mNew session: {active_session_id} — \"{cmd_arg}\"\033[0m\n")
+                    else:
+                        print(f"\033[32mNew session: {active_session_id}\033[0m\n")
+                    continue
+                elif cmd == "/history":
+                    print(f"\n\033[1mSession: {active_session_id}\033[0m")
+                    print(f"  Messages: {len(messages)}")
+                    for i, m in enumerate(messages):
+                        role = m.get("role", "?")
+                        preview = m.get("content", "")[:80].replace("\n", " ")
+                        print(f"  {i}: [{role}] {preview}{'...' if len(m.get('content', '')) > 80 else ''}")
+                    print()
+                    continue
+                elif cmd == "/save":
+                    import json as _json
+                    save_path = Path.home() / ".config" / "sudo" / "sessions" / f"{active_session_id}_export.json"
+                    save_path.parent.mkdir(parents=True, exist_ok=True)
+                    save_path.write_text(_json.dumps({"session_id": active_session_id, "messages": messages}, indent=2))
+                    print(f"\033[32mSession saved to {save_path}\033[0m\n")
+                    continue
+                elif cmd == "/retry":
+                    # Remove last assistant message and retry
+                    if len(messages) > 1 and messages[-1].get("role") == "assistant":
+                        removed = messages.pop()
+                        print(f"\033[33mRemoved last assistant response. Retrying...\033[0m")
+                        # Re-process the last user message
+                        user_input = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+                        if user_input:
+                            continue  # Re-enter the main loop to re-prompt
+                        else:
+                            print("\033[31mNo user message to retry.\033[0m\n")
+                            continue
+                    else:
+                        print("\033[31mNo assistant response to retry.\033[0m\n")
+                    continue
+                elif cmd == "/undo":
+                    n = 1
+                    if cmd_arg and cmd_arg.isdigit():
+                        n = int(cmd_arg)
+                    removed = 0
+                    for _ in range(n):
+                        # Remove assistant response
+                        if messages and messages[-1].get("role") == "assistant":
+                            messages.pop()
+                            removed += 1
+                        # Remove preceding user message
+                        if messages and messages[-1].get("role") == "user":
+                            messages.pop()
+                            removed += 1
+                    save_active_session_messages(active_session_id, messages)
+                    print(f"\033[33mUndid {n} turn(s) ({removed} message(s) removed).\033[0m\n")
+                    continue
+                elif cmd == "/title":
+                    if cmd_arg:
+                        session_data[active_session_id + "_title"] = cmd_arg
+                        sm.save(session_data)
+                        print(f"\033[32mSession titled: \"{cmd_arg}\"\033[0m\n")
+                    else:
+                        title = session_data.get(active_session_id + "_title", "")
+                        print(f"Session title: \033[1m{title or '(none)'}\033[0m")
+                        print("Usage: /title <name>")
+                    continue
+                elif cmd == "/redraw":
+                    print("\033[2J\033[H", end="", flush=True)
+                    if not quiet:
+                        print_banner(__version__)
+                    print_status_bar(provider.model, messages, last_response_time, start_time)
+                    continue
+                elif cmd == "/handoff":
+                    print(f"\033[33mHandoff requested for session: {active_session_id}\033[0m")
+                    print("This feature is not yet implemented. Coming soon.")
+                    continue
+                elif cmd in ("/branch", "/fork"):
+                    branch_id = f"{active_session_id}_branch_{int(time.time())}"
+                    if cmd_arg:
+                        session_data[branch_id + "_title"] = cmd_arg
+                    # Copy current messages to branch
+                    save_active_session_messages(branch_id, messages)
+                    print(f"\033[32mBranched session: {branch_id}\033[0m\n")
                     continue
                 elif cmd == "/model":
                     if not cmd_arg:
