@@ -371,6 +371,9 @@ def print_status_bar(model: str, messages: list[dict], last_response_time: float
     display_model = model
     if len(display_model) > 16:
         display_model = display_model[:13] + "..."
+    # Sanitize: only allow safe characters
+    import re as _re
+    display_model = _re.sub(r"[^\w\-./:]+", "_", display_model)
         
     ctx_limit = get_context_limit(model)
     
@@ -928,15 +931,13 @@ def run_chat(args) -> int:
     session_data = sm.load()
     run_hooks("on_chat_start", cfg, provider)
     
-    # Load or initialize the active session and messages
-    active_session_id = session_data.get("active_session_id") or get_active_session_id()
+    # Start a new session each run
+    active_session_id = f"session_{int(time.time())}"
     session_data["active_session_id"] = active_session_id
     sm.save(session_data)
     
-    messages = load_active_session_messages(active_session_id)
-    if not messages:
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-        save_active_session_messages(active_session_id, messages)
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    save_active_session_messages(active_session_id, messages)
         
     # Synchronize system prompt tools definitions
     messages[0]["content"] = SYSTEM_PROMPT
