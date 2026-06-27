@@ -102,15 +102,15 @@ def main(argv: list[str] | None = None) -> int:
         from sudo.commands.chat import run_chat
 
         # Pipe mode: read stdin and pass as initial input
-        pipe_input = None
+        _pipe_input = None
         if args.pipe or not sys.stdin.isatty():
             try:
-                pipe_input = sys.stdin.read().strip()
+                _pipe_input = sys.stdin.read().strip()
             except Exception:
                 pass
 
         class MockArgs:
-            pipe_input = pipe_input
+            pipe_input = _pipe_input
             quiet = args.quiet
             json_output = args.json
 
