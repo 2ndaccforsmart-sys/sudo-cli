@@ -952,25 +952,28 @@ def run_chat(args) -> int:
     # Session attachments staging
     current_attachments: list[dict[str, str]] = []
     
-    # Set up tab completion for commands
+    # Set up live dropdown completion for commands
     try:
-        import readline
-        COMMANDS = ["/connect", "/model", "/clear", "/sessions", "/usage", "/paste", "/help", "/exit", "/quit"]
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.completion import WordCompleter, FuzzyWordCompleter
+        from prompt_toolkit.history import InMemoryHistory
+        from prompt_toolkit.key_binding import KeyBindings
 
-        def _completer(text: str, state: int) -> str | None:
-            if not text.startswith("/"):
-                return None
-            matches = [c for c in COMMANDS if c.startswith(text)]
-            try:
-                return matches[state] + " "
-            except IndexError:
-                return None
+        COMMANDS_WORDS = ["/connect", "/model", "/clear", "/sessions", "/usage", "/paste", "/help", "/exit", "/quit"]
 
-        readline.set_completer(_completer)
-        readline.set_completer_delims(" \t\n")
-        readline.parse_and_bind("tab: complete")
+        class _CommandCompleter(FuzzyWordCompleter):
+            def get_completions(self, document, complete_event):
+                text = document.text_before_cursor
+                if not text.startswith("/"):
+                    return
+                yield from super().get_completions(document, complete_event)
+
+        _completer = _CommandCompleter(COMMANDS_WORDS, display_dict={c: c for c in COMMANDS_WORDS})
+        _completer.WORD = True
+
+        _session = PromptSession(completer=_completer, history=InMemoryHistory(), complete_while_typing=True)
     except ImportError:
-        pass
+        _session = None
 
     # Handle pipe mode — process initial input non-interactively
     if pipe_input and not sys.stdin.isatty():
@@ -1019,7 +1022,10 @@ def run_chat(args) -> int:
                 print_status_bar(provider.model, messages, last_response_time, start_time)
             
             try:
-                user_input = input("> ").strip()
+                if _session is not None:
+                    user_input = _session.prompt("> ").strip()
+                else:
+                    user_input = input("> ").strip()
             except (KeyboardInterrupt, EOFError):
                 print("\nExiting chat. Goodbye!")
                 break
