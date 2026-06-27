@@ -29,7 +29,7 @@ def _try_rg(args) -> int:
     if args.files:
         cmd.append("--files-with-matches")
     else:
-        cmd.extend(["--max-count", str(args.max_matches)])
+        cmd.extend(["-m", str(args.max_matches)])
     cmd.append(args.pattern)
 
     try:
@@ -60,7 +60,7 @@ def _fallback_grep(args) -> None:
     if args.files:
         cmd.append("-l")
     else:
-        cmd.extend(["--max-count", str(args.max_matches)])
+        cmd.extend(["-m", str(args.max_matches)])
     cmd.extend([args.pattern, cwd])
 
     try:
@@ -81,7 +81,9 @@ def _fallback_grep(args) -> None:
     ignored = {".git", "__pycache__", "node_modules", ".venv", "venv", ".env", "dist", "build"}
     count = 0
     for line in output.splitlines():
-        if any(ig in line for ig in ignored):
+        filepath = line.split(":", 1)[0] if ":" in line else line
+        path_parts = set(filepath.replace("\\", "/").split("/"))
+        if path_parts & ignored:
             continue
         count += 1
         print(line[: tw - 3] + "..." if len(line) > tw else line)

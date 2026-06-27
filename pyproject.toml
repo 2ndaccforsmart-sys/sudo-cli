@@ -16,3 +16,7 @@ cli = "sudo.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["sudo*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

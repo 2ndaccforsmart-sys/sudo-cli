@@ -33,6 +33,27 @@ def register(subparsers) -> None:
     d.add_argument("name", nargs="?", default=None, help="Provider name (default: current)")
     d.set_defaults(func=lambda args: show_docs(args))
 
+    add = subs.add_parser("add", help="Add a custom provider (endpoint, key, model)")
+    add.add_argument("name", help="Provider name (e.g. 'my-custom-api')")
+    add.add_argument("--base-url", required=True, help="API base URL")
+    add.add_argument("--model", default="gpt-4o-mini", help="Default model (default: gpt-4o-mini)")
+    add.add_argument("--api-key", help="API key (or set via env var)")
+    add.add_argument("--env-key", help="Environment variable name for the API key")
+    add.add_argument("--api-type", default="openai", choices=["openai", "anthropic", "google"], help="API format (default: openai)")
+    add.set_defaults(func=lambda args: add_provider(args))
+
+    edit = subs.add_parser("edit", help="Edit a custom provider's settings")
+    edit.add_argument("name", help="Provider name to edit")
+    edit.add_argument("--base-url", help="New API base URL")
+    edit.add_argument("--model", help="New default model")
+    edit.add_argument("--api-key", help="New API key")
+    edit.add_argument("--env-key", help="New environment variable name")
+    edit.set_defaults(func=lambda args: edit_provider(args))
+
+    rm = subs.add_parser("remove", help="Remove a custom provider")
+    rm.add_argument("name", help="Provider name to remove")
+    rm.set_defaults(func=lambda args: remove_provider(args))
+
 
 def _render_table(headers, rows, max_width=66):
     """Render a table as a list of text lines."""
@@ -48,7 +69,7 @@ def _render_table(headers, rows, max_width=66):
         for i in range(ncols):
             if overflow <= 0:
                 break
-            shrink = min(col_widths[i] - 5, overflow // (ncols - i) if ncols - i > 0 else 0)
+            shrink = max(0, min(col_widths[i] - 5, overflow // (ncols - i)))
             if shrink > 0:
                 col_widths[i] -= shrink
                 overflow -= shrink
@@ -60,8 +81,9 @@ def _render_table(headers, rows, max_width=66):
             parts.append(str(c)[:w].ljust(w))
         return " " + "  ".join(parts)
 
-    out.append(_render(headers))
-    out.append("-" * max_width)
+    header_line = _render(headers)
+    out.append(header_line)
+    out.append("-" * len(header_line))
     for row in rows:
         out.append(_render(row[:ncols]))
     return out
@@ -159,3 +181,87 @@ def show_docs(args) -> None:
     print(f"  Tier: {defn.tier}")
     if defn.notes:
         print(f"  Notes: {defn.notes}")
+
+
+def add_provider(args) -> None:
+    cfg = load()
+    name = args.name
+
+    # Check if already exists in registry or custom
+    if name in PROVIDER_REGISTRY:
+        print(f"Provider '{name}' already exists. Use 'sudo provider edit' to modify.")
+        sys.exit(1)
+    for ep in cfg.extra_providers:
+        if ep.get("name") == name:
+            print(f"Custom provider '{name}' already exists. Use 'sudo provider edit' to modify.")
+            sys.exit(1)
+
+    entry = {
+        "name": name,
+        "base_url": args.base_url,
+        "model": args.model,
+        "api_key": args.api_key,
+        "env_key": args.env_key or "",
+        "api_type": args.api_type if hasattr(args, "api_type") else "openai",
+    }
+    cfg.extra_providers.append(entry)
+    save(cfg)
+    print(f"\033[32mAdded custom provider '{name}' -> {args.base_url}\033[0m")
+
+
+def edit_provider(args) -> None:
+    cfg = load()
+    name = args.name
+
+    # Find custom provider
+    idx = None
+    for i, ep in enumerate(cfg.extra_providers):
+        if ep.get("name") == name:
+            idx = i
+            break
+
+    if idx is None:
+        if name in PROVIDER_REGISTRY:
+            print(f"'{name}' is a built-in provider and cannot be edited. Use 'sudo provider set {name}' instead.")
+        else:
+            print(f"Custom provider '{name}' not found. Use 'sudo provider add' first.")
+        sys.exit(1)
+
+    entry = cfg.extra_providers[idx]
+    if args.base_url:
+        entry["base_url"] = args.base_url
+    if args.model:
+        entry["model"] = args.model
+    if args.api_key:
+        entry["api_key"] = args.api_key
+    if args.env_key:
+        entry["env_key"] = args.env_key
+
+    cfg.extra_providers[idx] = entry
+    save(cfg)
+    print(f"\033[32mUpdated custom provider '{name}'\033[0m")
+
+
+def remove_provider(args) -> None:
+    cfg = load()
+    name = args.name
+
+    if name in PROVIDER_REGISTRY:
+        print(f"'{name}' is a built-in provider and cannot be removed.")
+        sys.exit(1)
+
+    idx = None
+    for i, ep in enumerate(cfg.extra_providers):
+        if ep.get("name") == name:
+            idx = i
+            break
+
+    if idx is None:
+        print(f"Custom provider '{name}' not found.")
+        sys.exit(1)
+
+    cfg.extra_providers.pop(idx)
+    if cfg.provider == name:
+        cfg.provider = None
+    save(cfg)
+    print(f"\033[32mRemoved custom provider '{name}'\033[0m")

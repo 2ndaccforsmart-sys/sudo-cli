@@ -10,6 +10,7 @@ import sys
 
 from sudo import __version__
 from sudo.utils.banner import print_banner
+from sudo.core.plugins import discover_plugins, run_hooks
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,6 +35,8 @@ Examples:
                         help="Show version and exit")
     parser.add_argument("--detail", action="store_true", help="Expand output with more detail")
     parser.add_argument("--json", action="store_true", help="Output in JSON format")
+    parser.add_argument("--quiet", "-q", action="store_true", help="Suppress non-essential output for scripting")
+    parser.add_argument("--pipe", action="store_true", help="Read input from stdin (pipe mode)")
 
     subparsers = parser.add_subparsers(
         title="commands", dest="command", metavar="<command>",
@@ -92,10 +95,25 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    discover_plugins()
+    run_hooks("on_cli_start", args)
+
     if not args.command:
         from sudo.commands.chat import run_chat
+
+        # Pipe mode: read stdin and pass as initial input
+        pipe_input = None
+        if args.pipe or not sys.stdin.isatty():
+            try:
+                pipe_input = sys.stdin.read().strip()
+            except Exception:
+                pass
+
         class MockArgs:
-            pass
+            pipe_input = pipe_input
+            quiet = args.quiet
+            json_output = args.json
+
         return run_chat(MockArgs())
 
     try:

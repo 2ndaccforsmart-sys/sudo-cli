@@ -45,7 +45,7 @@ def print_table(headers: list[str], rows: list[list[str]], max_width: int = 70) 
         for i in range(ncols):
             if overflow <= 0:
                 break
-            shrink = min(col_widths[i] - 5, overflow // (ncols - i) if ncols - i > 0 else 0)
+            shrink = max(0, min(col_widths[i] - 5, overflow // (ncols - i)))
             if shrink > 0:
                 col_widths[i] -= shrink
                 overflow -= shrink
@@ -75,8 +75,12 @@ def page(text: str) -> None:
     pager = os.environ.get("PAGER", "less")
     try:
         p = subprocess.Popen(pager, stdin=subprocess.PIPE, shell=True if " " in pager else False)
-        p.communicate(text.encode())
-    except (FileNotFoundError, OSError):
+        p.communicate(text.encode(), timeout=30)
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired, BrokenPipeError):
+        try:
+            p.kill()
+        except Exception:
+            pass
         print(text)
 
 

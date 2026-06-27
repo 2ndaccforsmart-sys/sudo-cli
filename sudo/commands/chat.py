@@ -10,11 +10,12 @@ import json
 import base64
 import mimetypes
 from pathlib import Path
-from typing import Generator, Any
+from typing import Generator, Any, Optional
 
 from sudo.core.config import load, save
-from sudo.core.provider import PROVIDER_REGISTRY, ProviderFactory, BaseProvider
+from sudo.core.provider import PROVIDER_REGISTRY, ProviderFactory, BaseProvider, TIER_LABELS, TIER_ORDER
 from sudo.core.session import SessionManager
+from sudo.core import tools
 from sudo.utils.output import terminal_width
 from sudo.utils.banner import print_banner
 from sudo import __version__
@@ -26,17 +27,10 @@ SYSTEM_PROMPT = (
     "- Be direct, professional, and clear. Avoid excessive greetings or unnecessary filler, but respond naturally and helpfully to the user.\n"
     "- You can explain what you are about to do before calling a tool, and explain what you did after a tool runs.\n"
     "- If the user says hello or hi, greet them back professionally and ask how you can assist them.\n\n"
-    "To interact with the environment, use the following XML tags. If you do not need to run a tool to address the user's input (e.g., for greetings, general questions, or chat), respond with a direct text answer instead of calling a tool.\n"
+    "To interact with the environment, use the tool calls described below. If you do not need to run a tool to address the user's input (e.g., for greetings, general questions, or chat), respond with a direct text answer instead of calling a tool.\n"
     "Do NOT combine multiple tool calls in a single turn. Only call one tool at a time, wait for the tool output, then decide the next action.\n\n"
-    "Available tools:\n"
-    "1. Read a file:\n"
-    "<tool:read_file path=\"relative/path/to/file\"/>\n\n"
-    "2. Write/overwrite a file:\n"
-    "<tool:write_file path=\"relative/path/to/file\">\n[file contents]\n</tool:write_file>\n\n"
-    "3. Delete a file or directory:\n"
-    "<tool:delete_file path=\"relative/path/to/file_or_dir\"/>\n\n"
-    "4. Run a shell command:\n"
-    "<tool:run_command cmd=\"command to execute\"/>\n\n"
+    "Use XML tags to call tools:\n"
+    + tools.get_system_prompt_tools() + "\n\n"
     "When you run a tool, the output of the tool will be provided to you in the next turn."
 )
 
@@ -114,6 +108,28 @@ def load_multimodal_file(path: str) -> dict[str, str] | None:
         }
     except Exception:
         return None
+
+
+def trim_context(messages: list[dict], model: str, reserved_ratio: float = 0.85) -> list[dict]:
+    """Trim message list to stay within context window.
+
+    Strategy: always keep system prompt and last 3 turns.
+    Summarize older messages into a single condensed user message.
+    Uses token estimation (chars/4) to decide when to trim.
+    """
+    ctx_limit = get_context_limit(model)
+    target_max = int(ctx_limit * reserved_ratio)
+
+    total_chars = sum(len(m.get("content", "")) for m in messages)
+    if total_chars // 4 <= target_max:
+        return messages
+
+    # Always keep system prompt (index 0) and last 3 exchanges
+    trimmed = messages[:1]  # system prompt
+    if len(messages) > 7:
+        trimmed.append({"role": "user", "content": "[Earlier conversation history was trimmed to fit context window. Key context retained below.]"})
+    trimmed.extend(messages[-6:] if len(messages) > 1 else messages[1:])
+    return trimmed
 
 
 def chat_stream(provider: BaseProvider, messages: list[dict], usage_stats: dict[str, int], **kwargs) -> Generator[str, None, None]:
@@ -566,70 +582,7 @@ def check_and_run_setup() -> bool:
     return True
 
 
-def parse_and_execute_tools(response_text: str) -> tuple[bool, str]:
-    """Parses tool calls from response_text and executes them.
-    
-    Returns a tuple: (had_tool_call, result_message)
-    """
-    write_match = re.search(r'<tool:write_file\s+path=["\'](.*?)["\']\s*>(.*?)</tool:write_file>', response_text, re.DOTALL)
-    if write_match:
-        path = write_match.group(1).strip()
-        content = write_match.group(2)
-        try:
-            abs_path = os.path.abspath(path)
-            os.makedirs(os.path.dirname(abs_path), exist_ok=True)
-            with open(abs_path, 'w', encoding='utf-8') as f:
-                f.write(content)
-            return True, f"[Tool Output: File written successfully to {path}]"
-        except Exception as e:
-            return True, f"[Tool Output Error writing file: {e}]"
-            
-    read_match = re.search(r'<tool:read_file\s+path=["\'](.*?)["\']\s*/>', response_text)
-    if read_match:
-        path = read_match.group(1).strip()
-        try:
-            abs_path = os.path.abspath(path)
-            if not os.path.exists(abs_path):
-                return True, f"[Tool Output Error: File {path} does not exist]"
-            with open(abs_path, 'r', encoding='utf-8', errors='replace') as f:
-                content = f.read(5000)
-            return True, f"[Tool Output for read_file {path}]:\n{content}"
-        except Exception as e:
-            return True, f"[Tool Output Error reading file: {e}]"
-            
-    list_match = re.search(r'<tool:list_dir\s+path=["\'](.*?)["\']\s*/>', response_text)
-    if list_match:
-        return True, "[Tool Output Error: list_dir tool is disabled by user security policy.]"
-            
-    delete_match = re.search(r'<tool:delete_file\s+path=["\'](.*?)["\']\s*/>', response_text)
-    if delete_match:
-        path = delete_match.group(1).strip()
-        try:
-            abs_path = os.path.abspath(path)
-            if os.path.isdir(abs_path):
-                import shutil
-                shutil.rmtree(abs_path)
-                return True, f"[Tool Output: Directory {path} deleted successfully]"
-            elif os.path.exists(abs_path):
-                os.remove(abs_path)
-                return True, f"[Tool Output: File {path} deleted successfully]"
-            else:
-                return True, f"[Tool Output Error: Path {path} does not exist]"
-        except Exception as e:
-            return True, f"[Tool Output Error deleting path: {e}]"
-            
-    cmd_match = re.search(r'<tool:run_command\s+cmd=["\'](.*?)["\']\s*/>', response_text)
-    if cmd_match:
-        cmd = cmd_match.group(1).strip()
-        try:
-            import subprocess
-            res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=60)
-            output = f"Stdout:\n{res.stdout}\nStderr:\n{res.stderr}"
-            return True, f"[Tool Output for run_command '{cmd}']: (Exit Code: {res.returncode})\n{output}"
-        except Exception as e:
-            return True, f"[Tool Output Error executing command: {e}]"
-            
-    return False, ""
+# parse_and_execute_tools moved to sudo.core.tools
 
 
 # ── Chat Session Persistence Helpers ─────────────────────────────────────────
@@ -678,7 +631,12 @@ def handle_sessions_cmd(cmd_arg: str, session_data: dict, sm: SessionManager) ->
     s_dir = get_sessions_dir()
     active_session_id = session_data.get("active_session_id", get_active_session_id())
     
-    files = sorted(s_dir.glob("session_*.json"), key=lambda f: f.stat().st_mtime)
+    def _safe_mtime(f):
+        try:
+            return f.stat().st_mtime
+        except OSError:
+            return 0
+    files = sorted(s_dir.glob("session_*.json"), key=_safe_mtime)
     
     if not cmd_arg:
         print("\n\033[1mSaved Chat Sessions:\033[0m")
@@ -704,9 +662,12 @@ def handle_sessions_cmd(cmd_arg: str, session_data: dict, sm: SessionManager) ->
                 mtime = time.strftime('%Y-%m-%d %H:%M', time.localtime(f.stat().st_mtime))
                 print(f"  {idx:2d}. {mtime} | {m_count:2d} msgs | {summary}{is_active}")
         print("\nCommands:")
-        print("  /sessions load <num>   Load a session")
-        print("  /sessions new          Start a new session")
-        print("  /sessions delete <num> Delete a session")
+        print("  /sessions load <num>       Load a session")
+        print("  /sessions new              Start a new session")
+        print("  /sessions delete <num>     Delete a session")
+        print("  /sessions export <num|all> Export session(s) as JSON")
+        print("  /sessions import <path>    Import session from JSON file")
+        print("  /sessions cleanup          Remove sessions older than 30 days")
         print()
         return active_session_id, load_active_session_messages(active_session_id)
         
@@ -752,7 +713,7 @@ def handle_sessions_cmd(cmd_arg: str, session_data: dict, sm: SessionManager) ->
             except Exception as e:
                 print(f"\033[31mError deleting session: {e}\033[0m")
             if target_id == active_session_id:
-                remaining_files = sorted(s_dir.glob("session_*.json"), key=lambda f: f.stat().st_mtime)
+                remaining_files = sorted(s_dir.glob("session_*.json"), key=_safe_mtime)
                 if remaining_files:
                     active_session_id = remaining_files[-1].stem
                 else:
@@ -768,9 +729,90 @@ def handle_sessions_cmd(cmd_arg: str, session_data: dict, sm: SessionManager) ->
             print()
         else:
             print("\033[31mError: Session index out of range.\033[0m\n")
+    elif sub == "export":
+        dest = sub_arg.lower() if sub_arg else ""
+        if dest == "all":
+            export_data = {}
+            for f in files:
+                s_id = f.stem
+                try:
+                    export_data[s_id] = json.loads(f.read_text())
+                except Exception:
+                    pass
+            export_path = s_dir.parent / "sessions_export.json"
+            try:
+                export_path.write_text(json.dumps(export_data, indent=2))
+                print(f"\033[32mExported {len(export_data)} sessions to {export_path}\033[0m\n")
+            except Exception as e:
+                print(f"\033[31mExport error: {e}\033[0m\n")
+        elif dest.isdigit():
+            idx = int(dest)
+            if 1 <= idx <= len(files):
+                target = files[idx - 1]
+                export_path = s_dir.parent / f"{target.stem}_export.json"
+                try:
+                    export_path.write_text(json.dumps(json.loads(target.read_text()), indent=2))
+                    print(f"\033[32mExported session to {export_path}\033[0m\n")
+                except Exception as e:
+                    print(f"\033[31mExport error: {e}\033[0m\n")
+            else:
+                print("\033[31mError: Session index out of range.\033[0m\n")
+        else:
+            # Export active session
+            export_path = s_dir.parent / f"{active_session_id}_export.json"
+            try:
+                msg_data = {"messages": messages, "timestamp": time.time()}
+                export_path.write_text(json.dumps(msg_data, indent=2))
+                print(f"\033[32mExported active session to {export_path}\033[0m\n")
+            except Exception as e:
+                print(f"\033[31mExport error: {e}\033[0m\n")
+        return active_session_id, messages
+
+    elif sub == "import":
+        if not sub_arg:
+            print("\033[31mError: Provide a path to a session JSON file.\033[0m\n")
+            return active_session_id, load_active_session_messages(active_session_id)
+        import_path = Path(sub_arg)
+        if not import_path.exists():
+            print(f"\033[31mError: File {sub_arg} not found.\033[0m\n")
+            return active_session_id, load_active_session_messages(active_session_id)
+        try:
+            import_data = json.loads(import_path.read_text())
+            imported_msgs = import_data.get("messages", [])
+            if not imported_msgs:
+                print("\033[31mError: No messages found in import file.\033[0m\n")
+                return active_session_id, load_active_session_messages(active_session_id)
+            new_id = f"imported_{int(time.time())}"
+            save_active_session_messages(new_id, imported_msgs)
+            active_session_id = new_id
+            session_data["active_session_id"] = active_session_id
+            sm.save(session_data)
+            messages = imported_msgs
+            print(f"\033[32mImported session ({len(imported_msgs)} messages) as {new_id}\033[0m\n")
+        except Exception as e:
+            print(f"\033[31mImport error: {e}\033[0m\n")
+        return active_session_id, messages
+
+    elif sub == "cleanup":
+        now = time.time()
+        cutoff = now - (30 * 24 * 3600)  # 30 days
+        removed = 0
+        for f in list(files):
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+                    removed += 1
+            except OSError:
+                pass
+        if removed:
+            print(f"\033[32mCleaned up {removed} session(s) older than 30 days.\033[0m\n")
+        else:
+            print("No sessions older than 30 days found.\n")
+        return active_session_id, load_active_session_messages(active_session_id)
+
     else:
         print(f"\033[31mUnknown sessions subcommand: {sub}\033[0m\n")
-        
+
     return active_session_id, load_active_session_messages(active_session_id)
 
 
@@ -858,22 +900,33 @@ def handle_usage_cmd(session_prompt_tokens: int, session_completion_tokens: int,
 # ── Main Session Execution Loop ──────────────────────────────────────────────
 
 def run_chat(args) -> int:
-    print_banner(__version__)
-    
+    quiet = getattr(args, "quiet", False)
+    pipe_input = getattr(args, "pipe_input", None)
+    json_output = getattr(args, "json_output", False)
+
+    if not quiet:
+        print_banner(__version__)
     if not check_and_run_setup():
-        print("\033[31mError: Chat session cannot start without configuration.\033[0m")
+        if not quiet:
+            print("\033[31mError: Chat session cannot start without configuration.\033[0m")
         return 1
-        
+
     cfg = load()
     try:
         pc = cfg.get_provider_config()
         provider = ProviderFactory.create(pc.name, api_key=pc.api_key, model=pc.model, base_url=pc.base_url)
     except Exception as e:
-        print(f"\033[31mError: {e}\033[0m")
+        if json_output:
+            print(json.dumps({"error": str(e)}))
+        elif not quiet:
+            print(f"\033[31mError: {e}\033[0m")
         return 1
         
+    from sudo.core.plugins import run_hooks
+
     sm = SessionManager()
     session_data = sm.load()
+    run_hooks("on_chat_start", cfg, provider)
     
     # Load or initialize the active session and messages
     active_session_id = session_data.get("active_session_id") or get_active_session_id()
@@ -902,10 +955,52 @@ def run_chat(args) -> int:
         import readline
     except ImportError:
         pass
-        
+
+    # Handle pipe mode — process initial input non-interactively
+    if pipe_input and not sys.stdin.isatty():
+        user_msg = {"role": "user", "content": pipe_input}
+        messages.append(user_msg)
+
+        response_start = time.time()
+        current_response = ""
+        usage_stats = {"prompt_tokens": 0, "completion_tokens": 0}
+        try:
+            messages = trim_context(messages, provider.model)
+            for chunk in chat_stream(provider, messages, usage_stats=usage_stats):
+                current_response += chunk
+                if not quiet:
+                    print(chunk, end="", flush=True)
+        except Exception as e:
+            if json_output:
+                print(json.dumps({"error": str(e)}))
+            elif not quiet:
+                print(f"\n\033[31mError: {e}\033[0m")
+
+        if current_response.strip():
+            messages.append({"role": "assistant", "content": current_response})
+
+        session_prompt_tokens += usage_stats["prompt_tokens"]
+        session_completion_tokens += usage_stats["completion_tokens"]
+        add_cumulative_usage(usage_stats["prompt_tokens"], usage_stats["completion_tokens"])
+
+        if json_output:
+            print(json.dumps({
+                "response": current_response,
+                "usage": usage_stats,
+            }))
+        else:
+            print()
+
+        save_active_session_messages(active_session_id, messages)
+
+        # In pure pipe mode (not interactive), exit after processing
+        if not sys.stdin.isatty() and not quiet:
+            return 0
+
     while True:
         try:
-            print_status_bar(provider.model, messages, last_response_time, start_time)
+            if not quiet:
+                print_status_bar(provider.model, messages, last_response_time, start_time)
             
             try:
                 user_input = input("> ").strip()
@@ -933,6 +1028,7 @@ def run_chat(args) -> int:
                     continue
                 elif cmd == "/help":
                     print("Commands:")
+                    print("  /connect [provider] [model]  Switch provider and/or model")
                     print("  /model [name]    Show or change model")
                     print("  /clear           Clear conversation history")
                     print("  /sessions [cmd]  Manage sessions (load, new, delete)")
@@ -988,6 +1084,73 @@ def run_chat(args) -> int:
                         except Exception as e:
                             print(f"\033[31mError updating provider: {e}\033[0m\n")
                     continue
+                elif cmd == "/connect":
+                    parts = cmd_arg.split(None, 1) if cmd_arg else []
+                    target_provider = parts[0].strip() if parts else ""
+                    target_model = parts[1].strip() if len(parts) > 1 else ""
+
+                    if not target_provider:
+                        print(f"Current provider: \033[1m{cfg.provider or '(none)'}\033[0m")
+                        print(f"Current model:    \033[1m{provider.model}\033[0m")
+                        print(f"\nAvailable providers ({len(PROVIDER_REGISTRY)}):")
+                        for tier in TIER_ORDER:
+                            provs = [(n, d) for n, d in PROVIDER_REGISTRY.items() if d.tier == tier]
+                            if not provs:
+                                continue
+                            print(f"  {TIER_LABELS.get(tier, f'Tier {tier}')}")
+                            for name, defn in sorted(provs, key=lambda x: x[0]):
+                                active = " \033[32m[active]\033[0m" if name == cfg.provider else ""
+                                print(f"    • {name:25s} {defn.display}{active}")
+                        print()
+                        print("Usage: /connect <provider> [model]")
+                        print("       /connect <provider>  — switch provider, select model interactively")
+                        print("       /connect <provider> <model>  — switch provider and model directly")
+                        continue
+
+                    if target_provider not in PROVIDER_REGISTRY:
+                        print(f"\033[31mUnknown provider '{target_provider}'. Use /connect to list providers.\033[0m\n")
+                        continue
+
+                    defn = PROVIDER_REGISTRY[target_provider]
+                    resolved_key = cfg.api_key or os.environ.get(defn.env_key)
+
+                    if not target_model:
+                        print(f"Switching to provider: \033[1m{defn.display}\033[0m ({target_provider})")
+                        print(f"  Default model: {defn.default_model}")
+                        suggested = {
+                            "google/gemini": ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"],
+                            "groq": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
+                            "github": ["gpt-4o", "gpt-4o-mini", "meta-llama-3.1-70b-instruct"],
+                            "openrouter": ["openai/gpt-4o", "meta-llama/llama-3.3-70b-instruct", "google/gemini-2.0-flash-exp"],
+                            "openai": ["gpt-4o", "gpt-4o-mini", "o1-mini"],
+                            "anthropic": ["claude-sonnet-4-20250514", "claude-3-5-haiku-latest"],
+                            "deepseek": ["deepseek-chat", "deepseek-coder"],
+                        }.get(target_provider, [defn.default_model])
+                        print("  Suggested models:")
+                        for i, m in enumerate(suggested, 1):
+                            print(f"    {i}. {m}")
+                        try:
+                            sel = input(f"  Select model (1-{len(suggested)}, default 1): ").strip()
+                        except (KeyboardInterrupt, EOFError):
+                            print()
+                            continue
+                        if not sel:
+                            target_model = suggested[0]
+                        elif sel.isdigit() and 1 <= int(sel) <= len(suggested):
+                            target_model = suggested[int(sel) - 1]
+                        else:
+                            target_model = sel
+
+                    try:
+                        cfg.provider = target_provider
+                        cfg.model = target_model
+                        save(cfg)
+                        pc = cfg.get_provider_config()
+                        provider = ProviderFactory.create(pc.name, api_key=pc.api_key or resolved_key, model=target_model, base_url=pc.base_url)
+                        print(f"\033[32mConnected to \033[1m{defn.display}\033[0m (\033[1m{target_model}\033[0m)\033[0m\n")
+                    except Exception as e:
+                        print(f"\033[31mError connecting to '{target_provider}': {e}\033[0m\n")
+                    continue
                 else:
                     print(f"\033[31mUnknown command: {cmd}\033[0m\n")
                     continue
@@ -1021,6 +1184,8 @@ def run_chat(args) -> int:
                 
                 current_response = ""
                 usage_stats = {"prompt_tokens": 0, "completion_tokens": 0}
+                # Trim context if approaching token limit
+                messages = trim_context(messages, provider.model)
                 try:
                     is_start_of_line = True
                     for chunk in chat_stream(provider, messages, usage_stats=usage_stats):
@@ -1044,8 +1209,17 @@ def run_chat(args) -> int:
                 session_completion_tokens += usage_stats["completion_tokens"]
                 add_cumulative_usage(usage_stats["prompt_tokens"], usage_stats["completion_tokens"])
                 
-                had_tool_call, tool_output = parse_and_execute_tools(current_response)
-                
+                calls = tools.parse_tool_calls(current_response)
+                if calls:
+                    for c in calls:
+                        run_hooks("on_tool_before", c.get("name"), c.get("arguments", {}))
+
+                had_tool_call, tool_output = tools.parse_and_execute_tools(current_response)
+
+                if calls:
+                    for c in calls:
+                        run_hooks("on_tool_after", c.get("name"), c.get("arguments", {}), tool_output)
+
                 if had_tool_call:
                     messages.append({"role": "assistant", "content": current_response})
                     # Check if the output indicates an error/failure
@@ -1061,7 +1235,8 @@ def run_chat(args) -> int:
                         print(f"\033[31m❌ {tool_output.strip()}\033[0m")
                     else:
                         clean_status = tool_output.splitlines()[0] if tool_output.strip() else ""
-                        print(f"\033[36m⚙️ {clean_status[:66]}...\033[0m")
+                        truncated = clean_status[:63] + "..." if len(clean_status) > 63 else clean_status
+                        print(f"\033[36m⚙️ {truncated}\033[0m")
                     messages.append({"role": "user", "content": tool_output})
                     save_active_session_messages(active_session_id, messages)
                     continue
