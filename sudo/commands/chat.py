@@ -952,8 +952,23 @@ def run_chat(args) -> int:
     # Session attachments staging
     current_attachments: list[dict[str, str]] = []
     
+    # Set up tab completion for commands
     try:
         import readline
+        COMMANDS = ["/connect", "/model", "/clear", "/sessions", "/usage", "/paste", "/help", "/exit", "/quit"]
+
+        def _completer(text: str, state: int) -> str | None:
+            if not text.startswith("/"):
+                return None
+            matches = [c for c in COMMANDS if c.startswith(text)]
+            try:
+                return matches[state] + " "
+            except IndexError:
+                return None
+
+        readline.set_completer(_completer)
+        readline.set_completer_delims(" \t\n")
+        readline.parse_and_bind("tab: complete")
     except ImportError:
         pass
 
