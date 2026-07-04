@@ -72,9 +72,12 @@ def page(text: str) -> None:
     if len(lines) <= h:
         print(text)
         return
-    pager = os.environ.get("PAGER", "less")
+    pager = os.environ.get("PAGER")
+    if not pager:
+        pager = "more" if sys.platform == "win32" else "less"
     try:
-        p = subprocess.Popen(pager, stdin=subprocess.PIPE, shell=True if " " in pager else False)
+        shell_flag = sys.platform != "win32" and " " not in pager
+        p = subprocess.Popen(pager, stdin=subprocess.PIPE, shell=shell_flag)
         p.communicate(text.encode(), timeout=30)
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired, BrokenPipeError):
         try:
@@ -152,3 +155,39 @@ def format_check(text: str, label: str = "") -> str:
 
 def format_cross(text: str, label: str = "") -> str:
     return f"  [✗] {label}: {text}" if label else f"  [✗] {text}"
+
+
+def render_table(headers: list[str], rows: list[list[str]], max_width: int = 66) -> list[str]:
+    """Render a table as a list of text lines."""
+    if not rows:
+        return ["(no data)"]
+    out = []
+    ncols = len(headers)
+    col_widths = []
+    for i, h in enumerate(headers):
+        max_cell = max(len(str(r[i])) if i < len(r) else 0 for r in rows) if rows else 0
+        col_widths.append(max(len(h), max_cell))
+    total = sum(col_widths) + 3 * (ncols - 1) + 2
+    if total > max_width and ncols > 0:
+        overflow = total - max_width
+        for i in range(ncols):
+            if overflow <= 0:
+                break
+            shrink = max(0, min(col_widths[i] - 5, overflow // (ncols - i)))
+            if shrink > 0:
+                col_widths[i] -= shrink
+                overflow -= shrink
+
+    def _render(cells):
+        parts = []
+        for i, c in enumerate(cells):
+            w = col_widths[i] if i < len(col_widths) else 10
+            parts.append(str(c)[:w].ljust(w))
+        return " " + "  ".join(parts)
+
+    header_line = _render(headers)
+    out.append(header_line)
+    out.append("-" * len(header_line))
+    for row in rows:
+        out.append(_render(row[:ncols]))
+    return out

@@ -18,6 +18,7 @@ from sudo.core.session import SessionManager
 from sudo.core import tools
 from sudo.utils.output import terminal_width
 from sudo.utils.banner import print_banner
+from sudo.utils.constants import estimate_model_cost
 from sudo import __version__
 
 
@@ -629,10 +630,16 @@ def save_active_session_messages(session_id: str, messages: list[dict]) -> None:
         pass
 
 
-def handle_sessions_cmd(cmd_arg: str, session_data: dict, sm: SessionManager) -> tuple[str, list[dict]]:
-    """Handles sessions commands. Returns (active_session_id, messages)."""
+def handle_sessions_cmd(cmd_arg: str, session_data: dict, sm: SessionManager,
+                        current_messages: Optional[list[dict]] = None) -> tuple[str, list[dict]]:
+    """Handles sessions commands. Returns (active_session_id, messages).
+
+    Args:
+        current_messages: The current in-memory messages list (used for export of active session).
+    """
     s_dir = get_sessions_dir()
     active_session_id = session_data.get("active_session_id", get_active_session_id())
+    messages = current_messages if current_messages is not None else load_active_session_messages(active_session_id)
     
     def _safe_mtime(f):
         try:
@@ -880,13 +887,16 @@ def handle_usage_cmd(session_prompt_tokens: int, session_completion_tokens: int,
     cum_p = usage.get("prompt_tokens", 0)
     cum_c = usage.get("completion_tokens", 0)
     
-    session_cost = (session_prompt_tokens * 0.15 + session_completion_tokens * 0.60) / 1000000
-    cumulative_cost = (cum_p * 0.15 + cum_c * 0.60) / 1000000
+    input_rate, output_rate = estimate_model_cost(provider.model)
+    session_cost = (session_prompt_tokens * input_rate + session_completion_tokens * output_rate) / 1000000
+    cumulative_cost = (cum_p * input_rate + cum_c * output_rate) / 1000000
     
     billing_status = check_key_billing_status(provider)
     
     print("\n\033[1mLLM Token Usage & Cost Status:\033[0m")
     print(f"  \033[1mKey Type:\033[0m             {billing_status}")
+    print(f"  \033[1mModel:\033[0m               {provider.model}")
+    print(f"  \033[1mRate:\033[0m                ${input_rate:.2f}/${output_rate:.2f} per 1M tokens (in/out)")
     print("  \033[1mSession:\033[0m")
     print(f"    Prompt Tokens:      {session_prompt_tokens:,}")
     print(f"    Completion Tokens:  {session_completion_tokens:,}")
@@ -972,7 +982,6 @@ def run_chat(args) -> int:
             "/retry":     "Retry the last message (resend to agent)",
             "/undo":      "Back up N user turns and re-prompt (default 1) (usage: /undo [N])",
             "/title":     "Set a title for the current session (usage: /title [name])",
-            "/handoff":   "Hand off this session to a messaging platform (Telegram, Discord, etc.)",
             "/branch":    "Branch the current session (explore a different path) (usage: /branch [name])",
             "/fork":      "Branch the current session (explore a different path) (alias for /branch)",
             "/history":   "Show conversation history",
@@ -1089,7 +1098,6 @@ def run_chat(args) -> int:
                     print("  /title [name]    Set a title for the current session")
                     print("  /history         Show conversation history")
                     print("  /redraw          Force a full UI repaint (recovers from terminal drift)")
-                    print("  /handoff         Hand off this session to a messaging platform")
                     print("  /branch [name]   Branch the current session (explore a different path)")
                     print("  /fork            Branch the current session (alias for /branch)")
                     print("  /help            Show this message")
@@ -1097,7 +1105,9 @@ def run_chat(args) -> int:
                     print()
                     continue
                 elif cmd == "/sessions":
-                    active_session_id, messages = handle_sessions_cmd(cmd_arg, session_data, sm)
+                    active_session_id, messages = handle_sessions_cmd(
+                        cmd_arg, session_data, sm, current_messages=messages
+                    )
                     continue
                 elif cmd == "/usage":
                     handle_usage_cmd(session_prompt_tokens, session_completion_tokens, provider)
@@ -1140,11 +1150,8 @@ def run_chat(args) -> int:
                     print()
                     continue
                 elif cmd == "/save":
-                    import json as _json
-                    save_path = Path.home() / ".config" / "sudo" / "sessions" / f"{active_session_id}_export.json"
-                    save_path.parent.mkdir(parents=True, exist_ok=True)
-                    save_path.write_text(_json.dumps({"session_id": active_session_id, "messages": messages}, indent=2))
-                    print(f"\033[32mSession saved to {save_path}\033[0m\n")
+                    save_active_session_messages(active_session_id, messages)
+                    print(f"\033[32mSession {active_session_id} saved.\033[0m\n")
                     continue
                 elif cmd == "/retry":
                     # Remove last assistant message and retry
@@ -1193,10 +1200,6 @@ def run_chat(args) -> int:
                     if not quiet:
                         print_banner(__version__)
                     print_status_bar(provider.model, messages, last_response_time, start_time)
-                    continue
-                elif cmd == "/handoff":
-                    print(f"\033[33mHandoff requested for session: {active_session_id}\033[0m")
-                    print("This feature is not yet implemented. Coming soon.")
                     continue
                 elif cmd in ("/branch", "/fork"):
                     branch_id = f"{active_session_id}_branch_{int(time.time())}"

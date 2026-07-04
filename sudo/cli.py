@@ -9,7 +9,6 @@ import argparse
 import sys
 
 from sudo import __version__
-from sudo.utils.banner import print_banner
 from sudo.core.plugins import discover_plugins, run_hooks
 
 
@@ -31,7 +30,7 @@ Examples:
         """,
     )
 
-    parser.add_argument("--version", action="version", version=f"sudoc {__version__}",
+    parser.add_argument("--version", action="version", version=f"sudo {__version__}",
                         help="Show version and exit")
     parser.add_argument("--detail", action="store_true", help="Expand output with more detail")
     parser.add_argument("--json", action="store_true", help="Output in JSON format")
@@ -109,12 +108,12 @@ def main(argv: list[str] | None = None) -> int:
             except Exception:
                 pass
 
-        class MockArgs:
-            pipe_input = _pipe_input
-            quiet = args.quiet
-            json_output = args.json
-
-        return run_chat(MockArgs())
+        mock_args = argparse.Namespace(
+            pipe_input=_pipe_input,
+            quiet=args.quiet,
+            json_output=args.json,
+        )
+        return run_chat(mock_args)
 
     try:
         args.func(args)

@@ -108,7 +108,30 @@ def _handle_delete_file(path: str) -> str:
         return f"[Tool Error deleting path: {e}]"
 
 
+DANGEROUS_CMD_PATTERNS = (
+    "rm -rf", "rm -fr", "rmdir", "del /s", "del /q",
+    "mkfs", "format", "fdisk", "> /dev/", "dd if=",
+    "chmod -R 777", "chown -R", ":(){ :|:& };:",
+)
+
+
 def _handle_run_command(cmd: str, timeout: int = 60) -> str:
+    cmd_lower = cmd.lower().strip()
+    for pattern in DANGEROUS_CMD_PATTERNS:
+        if pattern in cmd_lower:
+            try:
+                confirm = input(
+                    f"\033[33m⚠️  Potentially dangerous command detected.\033[0m\n"
+                    f"  Command: {cmd}\n"
+                    f"  Pattern: {pattern}\n"
+                    f"  Type 'yes' to confirm, anything else to cancel: "
+                ).strip().lower()
+            except (KeyboardInterrupt, EOFError):
+                return "[Tool Error: Command cancelled by user]"
+            if confirm != "yes":
+                return "[Tool Error: Command cancelled by user — dangerous command not confirmed]"
+            break
+
     try:
         res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
         output = ""

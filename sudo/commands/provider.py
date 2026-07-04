@@ -7,7 +7,7 @@ import sys
 
 from sudo.core.config import load, save
 from sudo.core.provider import PROVIDER_REGISTRY, ProviderFactory, TIER_LABELS, TIER_ORDER
-from sudo.utils.output import page
+from sudo.utils.output import page, render_table
 
 
 def register(subparsers) -> None:
@@ -55,40 +55,6 @@ def register(subparsers) -> None:
     rm.set_defaults(func=lambda args: remove_provider(args))
 
 
-def _render_table(headers, rows, max_width=66):
-    """Render a table as a list of text lines."""
-    out = []
-    ncols = len(headers)
-    col_widths = []
-    for i, h in enumerate(headers):
-        max_cell = max(len(str(r[i])) if i < len(r) else 0 for r in rows) if rows else 0
-        col_widths.append(max(len(h), max_cell))
-    total = sum(col_widths) + 3 * (ncols - 1) + 2
-    if total > max_width and ncols > 0:
-        overflow = total - max_width
-        for i in range(ncols):
-            if overflow <= 0:
-                break
-            shrink = max(0, min(col_widths[i] - 5, overflow // (ncols - i)))
-            if shrink > 0:
-                col_widths[i] -= shrink
-                overflow -= shrink
-
-    def _render(cells):
-        parts = []
-        for i, c in enumerate(cells):
-            w = col_widths[i] if i < len(col_widths) else 10
-            parts.append(str(c)[:w].ljust(w))
-        return " " + "  ".join(parts)
-
-    header_line = _render(headers)
-    out.append(header_line)
-    out.append("-" * len(header_line))
-    for row in rows:
-        out.append(_render(row[:ncols]))
-    return out
-
-
 def list_providers(args) -> None:
     lines = [f"sudo Providers — {len(PROVIDER_REGISTRY)} total", ""]
     for tier in TIER_ORDER:
@@ -104,7 +70,7 @@ def list_providers(args) -> None:
             key_set = "✓" if os.environ.get(defn.env_key) else ""
             free_tag = "✓" if defn.free_tier else ""
             rows.append([name, defn.default_model, free_tag, key_set])
-        for line in _render_table(headers, rows):
+        for line in render_table(headers, rows):
             lines.append(f"    {line}")
         lines.append("")
     page("\n".join(lines))
@@ -132,6 +98,8 @@ def set_key(args) -> None:
     cfg.api_key = args.key
     save(cfg)
     print("API key saved to config.")
+    print("\033[33m⚠️  Security note: API key is stored in plaintext at ~/.config/sudo/config.yaml\033[0m")
+    print("\033[33m   Consider using environment variables instead: export OPENAI_API_KEY=sk-...\033[0m")
 
 
 def test_provider(args) -> None:

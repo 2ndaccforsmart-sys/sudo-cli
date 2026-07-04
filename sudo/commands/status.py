@@ -10,6 +10,7 @@ from pathlib import Path
 
 from sudo.core.session import SessionManager
 from sudo.utils.output import page, terminal_width
+from sudo.utils.constants import SOURCE_EXTS, IGNORED_DIRS
 
 
 def register(subparsers) -> None:
@@ -51,13 +52,6 @@ def _file_stats(cwd):
     ext_counts = Counter()
     last_modified = []
 
-    source_exts = {
-        ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".c", ".cpp", ".h", ".hpp",
-        ".go", ".rs", ".rb", ".php", ".swift", ".kt", ".scala", ".sh", ".bash",
-        ".sql", ".r", ".m", ".cs", ".hs", ".ex", ".exs",
-        ".html", ".css", ".scss", ".sass", ".less", ".vue", ".svelte",
-        ".yaml", ".yml", ".toml", ".json", ".xml", ".md", ".rst",
-    }
     source_count = 0
     lang_ext_map = {
         "Python": {".py"}, "JavaScript/TS": {".js", ".ts", ".jsx", ".tsx"},
@@ -68,11 +62,8 @@ def _file_stats(cwd):
         "Docs": {".md", ".rst"},
     }
 
-    ignored_dirs = {".git", "__pycache__", "node_modules", ".venv", "venv",
-                    ".env", "dist", "build", ".tox", ".eggs", "target"}
-
     for root, dirs, files in os.walk(cwd):
-        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in ignored_dirs]
+        dirs[:] = [d for d in dirs if not d.startswith(".") and d not in IGNORED_DIRS]
         for f in files:
             if f.startswith("."):
                 continue
@@ -86,7 +77,7 @@ def _file_stats(cwd):
             ext = os.path.splitext(f)[1].lower()
             if ext:
                 ext_counts[ext] += 1
-            if ext in source_exts:
+            if ext in SOURCE_EXTS:
                 source_count += 1
             try:
                 last_modified.append((fpath, datetime.fromtimestamp(os.path.getmtime(fpath))))
