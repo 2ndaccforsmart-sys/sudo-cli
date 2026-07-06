@@ -1186,10 +1186,27 @@ def run_chat(args) -> int:
         usage_stats = {"prompt_tokens": 0, "completion_tokens": 0}
         try:
             messages = trim_context(messages, provider.model)
+            _in_think = False
+            _think_buf = ""
             for chunk in chat_stream(provider, messages, usage_stats=usage_stats):
-                current_response += chunk
-                if not quiet:
-                    print(chunk, end="", flush=True)
+                for char in chunk:
+                    current_response += char
+                    if _in_think:
+                        _think_buf += char
+                        if _think_buf.endswith("</think>"):
+                            _in_think = False
+                            _think_buf = ""
+                        continue
+                    if current_response.endswith("<think>"):
+                        _in_think = True
+                        _think_buf = "<think>"
+                        sys.stdout.write("\b" * 7)
+                        sys.stdout.write(" " * 7)
+                        sys.stdout.write("\b" * 7)
+                        sys.stdout.flush()
+                        continue
+                    if not quiet:
+                        print(char, end="", flush=True)
         except Exception as e:
             if json_output:
                 print(json.dumps({"error": str(e)}))
@@ -1544,8 +1561,28 @@ def run_chat(args) -> int:
                 messages = trim_context(messages, provider.model)
                 try:
                     is_start_of_line = True
+                    _in_think = False
+                    _think_buf = ""
                     for chunk in chat_stream(provider, messages, usage_stats=usage_stats):
                         for char in chunk:
+                            current_response += char
+                            if _in_think:
+                                _think_buf += char
+                                if _think_buf.endswith("</think>"):
+                                    _in_think = False
+                                    _think_buf = ""
+                                continue
+                            # Check for opening think tag
+                            if current_response.endswith("<think>"):
+                                _in_think = True
+                                _think_buf = "<think>"
+                                # Remove the partial tag from what was already printed
+                                # (it was printed char-by-char, so undo the last 7 chars)
+                                sys.stdout.write("\b" * 7)
+                                sys.stdout.write(" " * 7)
+                                sys.stdout.write("\b" * 7)
+                                sys.stdout.flush()
+                                continue
                             if is_start_of_line:
                                 if char != "\n":
                                     print("   ", end="", flush=True)
@@ -1553,7 +1590,6 @@ def run_chat(args) -> int:
                             if char == "\n":
                                 is_start_of_line = True
                             print(char, end="", flush=True)
-                        current_response += chunk
                 except Exception as e:
                     print(f"\n\033[31mError during stream: {e}\033[0m")
                     break
