@@ -971,7 +971,7 @@ def run_chat(args) -> int:
 
         COMMANDS_META = {
             "/connect":   "Switch provider and/or model interactively (usage: /connect [provider] [model])",
-            "/model":     "Show or change the current model (usage: /model [name])",
+            "/model":     "Show or change the current model (usage: /model or /models [name])",
             "/new":       "Start a new session (fresh session ID + history) (usage: /new [name])",
             "/reset":     "Start a new session (fresh session ID + history) (alias for /new)",
             "/clear":     "Clear conversation history for current session",
@@ -1209,7 +1209,7 @@ def run_chat(args) -> int:
                     save_active_session_messages(branch_id, messages)
                     print(f"\033[32mBranched session: {branch_id}\033[0m\n")
                     continue
-                elif cmd == "/model":
+                elif cmd in ("/model", "/models"):
                     if not cmd_arg:
                         print(f"Current model: \033[1m{provider.model}\033[0m")
                         print("Fetching available models from provider...")
