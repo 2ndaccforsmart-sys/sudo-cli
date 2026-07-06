@@ -9,6 +9,8 @@ import re
 import json
 import base64
 import mimetypes
+import tty
+import termios
 from pathlib import Path
 from typing import Generator, Any, Optional
 
@@ -910,6 +912,68 @@ def handle_usage_cmd(session_prompt_tokens: int, session_completion_tokens: int,
     print()
 
 
+def _pick_model_interactive(models: list[dict], current_model: str) -> str | None:
+    """Arrow-key interactive model picker. Returns selected model id or None."""
+    ids = [m.get("id", m.get("name", "?")) for m in models]
+    if not ids:
+        return None
+
+    # Find current selection
+    sel = 0
+    for i, mid in enumerate(ids):
+        if mid == current_model:
+            sel = i
+            break
+
+    # Try raw mode
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        _pick_draw(ids, sel, current_model)
+        while True:
+            ch = os.read(fd, 1)
+            if ch == b"\x1b":
+                seq = os.read(fd, 2)
+                if seq == b"[A":  # Up
+                    sel = (sel - 1) % len(ids)
+                elif seq == b"[B":  # Down
+                    sel = (sel + 1) % len(ids)
+                elif seq == b"[5":  # Page Up
+                    os.read(fd, 1)  # consume ~
+                    sel = max(0, sel - 10)
+                elif seq == b"[6":  # Page Down
+                    os.read(fd, 1)  # consume ~
+                    sel = min(len(ids) - 1, sel + 10)
+                elif seq[0:1] == b"" or seq == b"\x1b":  # Escape
+                    return None
+            elif ch in (b"\r", b"\n"):  # Enter
+                return ids[sel]
+            elif ch == b"\x03":  # Ctrl+C
+                return None
+            elif ch == b"q":
+                return None
+            _pick_draw(ids, sel, current_model)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def _pick_draw(ids: list[str], sel: int, current: str) -> None:
+    """Render the model picker list."""
+    sys.stdout.write("\x1b[?25l")  # hide cursor
+    sys.stdout.write("\x1b[2J\x1b[H")  # clear screen, cursor home
+    sys.stdout.write("\033[1mSelect a model:\033[0m  (\u2191\u2193 navigate  Enter select  q cancel)\n\n")
+    for i, mid in enumerate(ids):
+        prefix = "\033[32m  \u25b6 \033[0m" if i == sel else "    "
+        marker = " \033[90m(current)\033[0m" if mid == current else ""
+        # Truncate display name if too long
+        display = mid if len(mid) <= 48 else mid[:45] + "..."
+        line = f"{prefix}{display}{marker}\n"
+        sys.stdout.write(line)
+    sys.stdout.write(f"\n\033[90m[{sel + 1}/{len(ids)}]\033[0m")
+    sys.stdout.flush()
+
+
 # ── Main Session Execution Loop ──────────────────────────────────────────────
 
 def run_chat(args) -> int:
@@ -971,7 +1035,7 @@ def run_chat(args) -> int:
 
         COMMANDS_META = {
             "/connect":   "Switch provider and/or model interactively (usage: /connect [provider] [model])",
-            "/model":     "Show or change the current model (usage: /model or /models [name])",
+            "/model":     "Pick a model interactively or set one directly (usage: /model [name])",
             "/new":       "Start a new session (fresh session ID + history) (usage: /new [name])",
             "/reset":     "Start a new session (fresh session ID + history) (alias for /new)",
             "/clear":     "Clear conversation history for current session",
@@ -1211,22 +1275,27 @@ def run_chat(args) -> int:
                     continue
                 elif cmd in ("/model", "/models"):
                     if not cmd_arg:
-                        print(f"Current model: \033[1m{provider.model}\033[0m")
                         print("Fetching available models from provider...")
                         try:
                             models = provider.list_models()
-                            if models:
-                                print("Available models:")
-                                for m in models[:10]:
-                                    mid = m.get("id", m.get("name", "?"))
-                                    print(f"  • {mid}")
-                                if len(models) > 10:
-                                    print(f"  ... and {len(models) - 10} more")
-                            else:
-                                print("No models returned by provider.")
+                            if not models:
+                                print("No models returned by provider.\n")
+                                continue
                         except Exception as e:
-                            print(f"Error fetching models: {e}")
-                        print()
+                            print(f"Error fetching models: {e}\n")
+                            continue
+                        picked = _pick_model_interactive(models, provider.model)
+                        if not picked or picked == provider.model:
+                            print()
+                            continue
+                        cfg.model = picked
+                        save(cfg)
+                        try:
+                            pc = cfg.get_provider_config()
+                            provider = ProviderFactory.create(pc.name, api_key=pc.api_key, model=picked, base_url=pc.base_url)
+                            print(f"\033[32mModel changed to \033[1m{picked}\033[0m\033[0m\n")
+                        except Exception as e:
+                            print(f"\033[31mError updating provider: {e}\033[0m\n")
                     else:
                         new_model = cmd_arg
                         # Validate model against provider's available models
