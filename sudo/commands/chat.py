@@ -912,6 +912,85 @@ def handle_usage_cmd(session_prompt_tokens: int, session_completion_tokens: int,
     print()
 
 
+_COMMANDS = {
+    "/connect":   "Switch provider and/or model",
+    "/model":     "Pick model interactively or set directly",
+    "/models":    "Pick model (alias for /model)",
+    "/new":       "Start a new session",
+    "/reset":     "Start a new session (alias for /new)",
+    "/clear":     "Clear conversation history",
+    "/sessions":  "Manage sessions",
+    "/usage":     "Show token usage and cost",
+    "/paste":     "Attach an image/video",
+    "/save":      "Save conversation to file",
+    "/retry":     "Retry last message",
+    "/undo":      "Back up N turns",
+    "/title":     "Set session title",
+    "/branch":    "Branch current session",
+    "/fork":      "Branch (alias for /branch)",
+    "/history":   "Show conversation history",
+    "/redraw":    "Force full UI repaint",
+    "/help":      "Show help message",
+    "/exit":      "Exit chat",
+    "/quit":      "Exit chat (alias for /exit)",
+}
+
+
+def _pick_command_dropdown(prefix: str = "/") -> str | None:
+    """Raw-mode dropdown for slash commands. Returns selected command or None."""
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    sel = 0
+    buf = prefix
+    try:
+        tty.setraw(fd)
+        while True:
+            cmds = [c for c in _COMMANDS if c.startswith(buf)]
+            sel = min(sel, max(0, len(cmds) - 1))
+            _draw_cmd_dropdown(buf, cmds, sel)
+            ch = os.read(fd, 1)
+            if ch in (b"\r", b"\n"):
+                return cmds[sel] if cmds else None
+            if ch == b"\x03":
+                return None
+            if ch == b"\x7f":
+                buf = buf[:-1] if len(buf) > 1 else "/"
+                sel = 0
+                continue
+            if ch == b"\x1b":
+                seq = os.read(fd, 2)
+                if seq == b"[A":
+                    sel = (sel - 1) % len(cmds) if cmds else 0
+                elif seq == b"[B":
+                    sel = (sel + 1) % len(cmds) if cmds else 0
+                elif seq[0:1] == b"":
+                    return None
+                continue
+            c = ch.decode("utf-8", errors="ignore")
+            if c.isprintable():
+                buf += c
+                sel = 0
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def _draw_cmd_dropdown(buf: str, cmds: list[str], sel: int) -> None:
+    """Render the command dropdown."""
+    sys.stdout.write("\x1b[?25l")
+    sys.stdout.write("\x1b[2J\x1b[H")
+    sys.stdout.write(f"\033[1mCommands\033[0m  \033[90m(type to filter, \u2191\u2193 navigate, Enter select, Esc cancel)\033[0m\n\n")
+    sys.stdout.write(f"  \033[36m{buf}\033[0m\n\n")
+    if not cmds:
+        sys.stdout.write("  \033[90m(no matches)\033[0m\n")
+    else:
+        for i, cmd in enumerate(cmds):
+            arrow = "\033[32m  \u25b6 \033[0m" if i == sel else "    "
+            desc = _COMMANDS.get(cmd, "")
+            sys.stdout.write(f"{arrow}\033[1m{cmd}\033[0m  \033[90m{desc}\033[0m\n")
+    sys.stdout.write(f"\n\033[90m[{sel+1}/{len(cmds)}]\033[0m")
+    sys.stdout.flush()
+
+
 def _pick_model_interactive(models: list[dict], current_model: str) -> str | None:
     """Arrow-key interactive model picker. Returns selected model id or None."""
     ids = [m.get("id", m.get("name", "?")) for m in models]
@@ -1026,58 +1105,12 @@ def run_chat(args) -> int:
     # Session attachments staging
     current_attachments: list[dict[str, str]] = []
     
-    # Set up live dropdown completion for commands
+    # Set up prompt session (command dropdown is handled separately)
     try:
         from prompt_toolkit import PromptSession
-        from prompt_toolkit.completion import Completer, Completion
         from prompt_toolkit.history import InMemoryHistory
 
-        COMMANDS_META = {
-            "/connect":   "Switch provider and/or model interactively (usage: /connect [provider] [model])",
-            "/model":     "Pick a model interactively or set one directly (usage: /model [name])",
-            "/models":    "Pick a model interactively or set one directly (alias for /model)",
-            "/new":       "Start a new session (fresh session ID + history) (usage: /new [name])",
-            "/reset":     "Start a new session (fresh session ID + history) (alias for /new)",
-            "/clear":     "Clear conversation history for current session",
-            "/sessions":  "Manage sessions: list, load, new, delete, export, import (usage: /sessions [cmd])",
-            "/usage":     "Show token usage and cost stats for this session",
-            "/paste":     "Attach an image/video to the next message (usage: /paste <path>)",
-            "/save":      "Save the current conversation",
-            "/retry":     "Retry the last message (resend to agent)",
-            "/undo":      "Back up N user turns and re-prompt (default 1) (usage: /undo [N])",
-            "/title":     "Set a title for the current session (usage: /title [name])",
-            "/branch":    "Branch the current session (explore a different path) (usage: /branch [name])",
-            "/fork":      "Branch the current session (explore a different path) (alias for /branch)",
-            "/history":   "Show conversation history",
-            "/redraw":    "Force a full UI repaint (recovers from terminal drift)",
-            "/help":      "Show this help message",
-            "/exit":      "Exit the chat session",
-            "/quit":      "Exit the chat session (alias for /exit)",
-        }
-
-        class _CommandCompleter(Completer):
-            def get_completions(self, document, complete_event):
-                text = document.text_before_cursor
-                if not text.startswith("/"):
-                    return
-                # Exact prefix match — show all commands that start with what user typed
-                for cmd, desc in COMMANDS_META.items():
-                    if cmd.startswith(text):
-                        yield Completion(
-                            cmd,
-                            start_position=-len(text),
-                            display=cmd,
-                            display_meta=desc,
-                        )
-
-        _completer = _CommandCompleter()
-
-        _session = PromptSession(
-            completer=_completer,
-            history=InMemoryHistory(),
-            complete_while_typing=True,
-            complete_in_thread=True,
-        )
+        _session = PromptSession(history=InMemoryHistory())
     except ImportError:
         _session = None
 
@@ -1144,6 +1177,25 @@ def run_chat(args) -> int:
                 cmd_parts = user_input.split(None, 1)
                 cmd = cmd_parts[0].lower()
                 cmd_arg = cmd_parts[1].strip() if len(cmd_parts) > 1 else ""
+
+                # If just "/" or incomplete command, show dropdown
+                if cmd not in _COMMANDS:
+                    matches = [c for c in _COMMANDS if c.startswith(cmd)]
+                    if len(matches) == 1:
+                        cmd = matches[0]
+                        cmd_arg = cmd_arg
+                    elif len(matches) > 1:
+                        picked = _pick_command_dropdown(cmd)
+                        if not picked:
+                            continue
+                        cmd = picked
+                        cmd_arg = ""
+                    else:
+                        picked = _pick_command_dropdown(cmd)
+                        if not picked:
+                            continue
+                        cmd = picked
+                        cmd_arg = ""
                 
                 if cmd in ("/exit", "/quit"):
                     print("Goodbye!")
