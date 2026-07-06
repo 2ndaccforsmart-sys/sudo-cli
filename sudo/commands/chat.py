@@ -1029,13 +1029,13 @@ def run_chat(args) -> int:
     # Set up live dropdown completion for commands
     try:
         from prompt_toolkit import PromptSession
-        from prompt_toolkit.completion import WordCompleter, FuzzyWordCompleter
+        from prompt_toolkit.completion import Completer, Completion
         from prompt_toolkit.history import InMemoryHistory
-        from prompt_toolkit.key_binding import KeyBindings
 
         COMMANDS_META = {
             "/connect":   "Switch provider and/or model interactively (usage: /connect [provider] [model])",
             "/model":     "Pick a model interactively or set one directly (usage: /model [name])",
+            "/models":    "Pick a model interactively or set one directly (alias for /model)",
             "/new":       "Start a new session (fresh session ID + history) (usage: /new [name])",
             "/reset":     "Start a new session (fresh session ID + history) (alias for /new)",
             "/clear":     "Clear conversation history for current session",
@@ -1055,21 +1055,29 @@ def run_chat(args) -> int:
             "/quit":      "Exit the chat session (alias for /exit)",
         }
 
-        class _CommandCompleter(FuzzyWordCompleter):
+        class _CommandCompleter(Completer):
             def get_completions(self, document, complete_event):
                 text = document.text_before_cursor
                 if not text.startswith("/"):
                     return
-                yield from super().get_completions(document, complete_event)
+                # Exact prefix match — show all commands that start with what user typed
+                for cmd, desc in COMMANDS_META.items():
+                    if cmd.startswith(text):
+                        yield Completion(
+                            cmd,
+                            start_position=-len(text),
+                            display=cmd,
+                            display_meta=desc,
+                        )
 
-        _completer = _CommandCompleter(
-            list(COMMANDS_META.keys()),
-            display_dict={c: c for c in COMMANDS_META},
-            meta_dict=COMMANDS_META,
+        _completer = _CommandCompleter()
+
+        _session = PromptSession(
+            completer=_completer,
+            history=InMemoryHistory(),
+            complete_while_typing=True,
+            complete_in_thread=True,
         )
-        _completer.WORD = True
-
-        _session = PromptSession(completer=_completer, history=InMemoryHistory(), complete_while_typing=True)
     except ImportError:
         _session = None
 
