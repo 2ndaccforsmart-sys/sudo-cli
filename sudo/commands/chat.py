@@ -1229,6 +1229,50 @@ def run_chat(args) -> int:
                         print()
                     else:
                         new_model = cmd_arg
+                        # Validate model against provider's available models
+                        model_valid = False
+                        model_suggestions: list[str] = []
+                        models_fetched = False
+                        try:
+                            fetched = provider.list_models()
+                            known_ids = [m.get("id", m.get("name", "")) for m in fetched]
+                            models_fetched = True
+                            if new_model in known_ids:
+                                model_valid = True
+                            else:
+                                # Check for close matches (starts with or contains)
+                                for mid in known_ids:
+                                    if mid.startswith(new_model) or new_model in mid:
+                                        model_suggestions.append(mid)
+                        except Exception:
+                            # If we can't fetch models, skip validation (offline/transient failure)
+                            pass
+
+                        if not model_valid and model_suggestions:
+                            print(f"\033[33m⚠️  '{new_model}' is not in the list of available models for this provider.\033[0m")
+                            print(f"  Did you mean one of these?")
+                            for sug in model_suggestions[:5]:
+                                print(f"    • {sug}")
+                            try:
+                                confirm = input("  Set model anyway? (y/N): ").strip().lower()
+                            except (KeyboardInterrupt, EOFError):
+                                print()
+                                continue
+                            if confirm not in ("y", "yes"):
+                                print("\033[33mModel not changed.\033[0m\n")
+                                continue
+                        elif not model_valid and models_fetched:
+                            # We successfully fetched models but the name wasn't found
+                            print(f"\033[33m⚠️  '{new_model}' is not in the list of available models.\033[0m")
+                            try:
+                                confirm = input("  Set model anyway? (y/N): ").strip().lower()
+                            except (KeyboardInterrupt, EOFError):
+                                print()
+                                continue
+                            if confirm not in ("y", "yes"):
+                                print("\033[33mModel not changed.\033[0m\n")
+                                continue
+
                         cfg.model = new_model
                         save(cfg)
                         try:
