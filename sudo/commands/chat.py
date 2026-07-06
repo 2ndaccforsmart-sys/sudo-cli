@@ -1114,11 +1114,12 @@ def run_chat(args) -> int:
         if not sys.stdin.isatty() and not quiet:
             return 0
 
+    # Print initial status bar after banner
+    if not quiet:
+        print_status_bar(provider.model, messages, last_response_time, start_time)
+
     while True:
         try:
-            if not quiet:
-                print_status_bar(provider.model, messages, last_response_time, start_time)
-            
             try:
                 if _session is not None:
                     user_input = _session.prompt("> ").strip()
@@ -1481,6 +1482,8 @@ def run_chat(args) -> int:
                     
             print()
             last_response_time = time.time() - response_start
+            if not quiet:
+                print_status_bar(provider.model, messages, last_response_time, start_time)
             
         except KeyboardInterrupt:
             print("\nInterrupted.")
