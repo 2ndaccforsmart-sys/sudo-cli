@@ -364,12 +364,33 @@ def parse_usage(response: dict, api_type: str) -> tuple[int, int]:
     return p_tok, c_tok
 
 
+# Track status bar state for in-place updates
+_status_bar_cursor_pos: str | None = None  # Saved ANSI cursor position string
+STATUS_BAR_HEIGHT = 3  # separator + status + separator
+
+
 def print_status_bar(model: str, messages: list[dict], last_response_time: float, start_time: float) -> None:
+    global _status_bar_cursor_pos
     tw = terminal_width()
-    
+
+    # If we printed a status bar before, move up and clear those lines
+    if _status_bar_cursor_pos is not None:
+        # Move up past everything printed since last status bar,
+        # then clear the old 3 status bar lines
+        sys.stdout.write("\x1b[s")       # save current cursor
+        sys.stdout.write(_status_bar_cursor_pos)  # restore to saved position
+        sys.stdout.write(f"\x1b[{STATUS_BAR_HEIGHT}A")  # move up 3 lines
+        sys.stdout.write(f"\x1b[{STATUS_BAR_HEIGHT}J")  # clear from cursor down
+        sys.stdout.flush()
+
+    # Save cursor position before we print the status bar
+    sys.stdout.write("\x1b[s")
+    sys.stdout.flush()
+    _status_bar_cursor_pos = "\x1b[u"  # restore sequence to get back here
+
     total_chars = sum(len(m["content"]) for m in messages)
     tokens = total_chars // 4
-    
+
     # Truncate model name to save visual space for the progress bar
     display_model = model
     if len(display_model) > 16:
@@ -377,9 +398,9 @@ def print_status_bar(model: str, messages: list[dict], last_response_time: float
     # Sanitize: only allow safe characters
     import re as _re
     display_model = _re.sub(r"[^\w\-./:]+", "_", display_model)
-        
+
     ctx_limit = get_context_limit(model)
-    
+
     if tokens == 0:
         ctx_text = "--"
         bar_pct = 0
@@ -389,55 +410,54 @@ def print_status_bar(model: str, messages: list[dict], last_response_time: float
             ctx_text = f"{tokens/1000:.1f}k"
         else:
             ctx_text = str(tokens)
-            
+
         bar_pct = min(100, int((tokens / ctx_limit) * 100))
         pct_text = f"{bar_pct}%"
-        
+
     if last_response_time < 0:
         time_text = "0s"
     else:
         time_text = f"{int(round(last_response_time))}s"
-        
+
     elapsed = int(time.time() - start_time)
     if elapsed >= 60:
         elapsed_text = f"{elapsed // 60}m"
     else:
         elapsed_text = f"{elapsed}s"
-        
+
     def visual_length(s: str) -> int:
         length = 0
         for char in s:
-            if char in ("⚡", "⏰", "⚕"):
+            if char in ("\u26a1", "\u23f0", "\u2695"):
                 length += 2
             else:
                 length += 1
         return length
 
-    fixed_v_len = visual_length(f"⚡ {display_model} | ctx {ctx_text} | [] {pct_text} | {time_text} | ⏰{elapsed_text}")
+    fixed_v_len = visual_length(f"\u26a1 {display_model} | ctx {ctx_text} | [] {pct_text} | {time_text} | \u23f0{elapsed_text}")
     available_bar_space = tw - fixed_v_len - 2
     bar_width = max(6, min(15, available_bar_space))
-    
+
     num_filled = min(bar_width, int((bar_pct / 100) * bar_width))
     num_empty = bar_width - num_filled
-    bar = "█" * num_filled + "░" * num_empty
-    
-    raw_status = f"⚡ {display_model} | ctx {ctx_text} | [{bar}] {pct_text} | {time_text} | ⏰{elapsed_text}"
+
+    raw_status = f"\u26a1 {display_model} | ctx {ctx_text} | [{'█' * num_filled}{'░' * num_empty}] {pct_text} | {time_text} | \u23f0{elapsed_text}"
     v_len = visual_length(raw_status)
-    
+
     if v_len > tw:
         padding = ""
     else:
         padding = " " * (tw - v_len)
-        
+
     colored_status = (
         f"\033[48;5;236m"
-        f"\033[38;5;220m⚡ {display_model}\033[0m\033[48;5;236m | "
+        f"\033[38;5;220m\u26a1 {display_model}\033[0m\033[48;5;236m | "
         f"ctx \033[38;5;220m{ctx_text}\033[0m\033[48;5;236m | "
         f"[\033[38;5;220m{'█' * num_filled}\033[0m\033[38;5;246m{'░' * num_empty}\033[0m\033[48;5;236m] \033[38;5;220m{pct_text}\033[0m\033[48;5;236m | "
         f"\033[38;5;220m{time_text}\033[0m\033[48;5;236m | "
-        f"⏰\033[38;5;220m{elapsed_text}\033[0m\033[48;5;236m{padding}\033[0m"
+        f"\u23f0\033[38;5;220m{elapsed_text}\033[0m\033[48;5;236m{padding}\033[0m"
     )
-    
+
     print("\033[38;5;208m" + "─" * tw + "\033[0m")
     print(colored_status)
     print("\033[38;5;208m" + "─" * tw + "\033[0m")
@@ -1327,6 +1347,7 @@ def run_chat(args) -> int:
                     continue
                 elif cmd == "/redraw":
                     print("\033[2J\033[H", end="", flush=True)
+                    _status_bar_cursor_pos = None  # screen cleared, reset tracking
                     if not quiet:
                         print_banner(__version__)
                     print_status_bar(provider.model, messages, last_response_time, start_time)
