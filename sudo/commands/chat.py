@@ -1194,21 +1194,20 @@ def run_chat(args) -> int:
             for chunk in chat_stream(provider, messages, usage_stats=usage_stats):
                 for char in chunk:
                     current_response += char
-                    if _in_think:
-                        _buf += char
-                        if _buf.endswith(_CLOSE):
-                            _in_think = False
-                            _buf = ""
-                        continue
                     _buf += char
-                    if len(_buf) > _MAX_LOOK:
+                    if _in_think and _buf.endswith(_CLOSE):
+                        _in_think = False
+                        _buf = ""
+                        continue
+                    if not _in_think and _buf.endswith(_OPEN):
+                        _in_think = True
+                        _buf = ""
+                        continue
+                    if not _in_think and len(_buf) > _MAX_LOOK:
                         safe = _buf[0]
                         _buf = _buf[1:]
                         if not quiet:
                             sys.stdout.write(safe)
-                    if _buf.endswith(_OPEN):
-                        _in_think = True
-                        _buf = ""
             for safe in _buf:
                 if not quiet:
                     sys.stdout.write(safe)
@@ -1569,23 +1568,26 @@ def run_chat(args) -> int:
                 try:
                     is_start_of_line = True
                     _in_think = False
-                    _buf = ""  # ring buffer for tag detection
+                    _buf = ""
                     _OPEN = "<think>"
                     _CLOSE = "</think>"
                     _MAX_LOOK = max(len(_OPEN), len(_CLOSE))  # 8
                     for chunk in chat_stream(provider, messages, usage_stats=usage_stats):
                         for char in chunk:
                             current_response += char
-                            if _in_think:
-                                _buf += char
-                                if _buf.endswith(_CLOSE):
-                                    _in_think = False
-                                    _buf = ""
-                                continue
-                            # Not in think mode — buffer and check for opening tag
                             _buf += char
-                            if len(_buf) > _MAX_LOOK:
-                                # Flush the oldest char — it can't be part of a tag anymore
+                            # Check for closing think tag (works in both states)
+                            if _in_think and _buf.endswith(_CLOSE):
+                                _in_think = False
+                                _buf = ""
+                                continue
+                            # Check for opening think tag
+                            if not _in_think and _buf.endswith(_OPEN):
+                                _in_think = True
+                                _buf = ""
+                                continue
+                            # Not part of any tag — flush old safe chars
+                            if not _in_think and len(_buf) > _MAX_LOOK:
                                 safe = _buf[0]
                                 _buf = _buf[1:]
                                 if safe == "\n":
@@ -1595,10 +1597,6 @@ def run_chat(args) -> int:
                                         sys.stdout.write("   ")
                                         is_start_of_line = False
                                 sys.stdout.write(safe)
-                            # Check if buffer ends with opening think tag
-                            if _buf.endswith(_OPEN):
-                                _in_think = True
-                                _buf = ""  # discard the tag from buffer
                     # Flush remaining buffer
                     for safe in _buf:
                         if safe == "\n":
