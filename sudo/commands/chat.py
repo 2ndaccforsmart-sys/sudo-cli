@@ -1018,7 +1018,8 @@ def _draw_cmd_dropdown(buf: str, cmds: list[str], sel: int) -> None:
 
 
 def _pick_model_interactive(models: list[dict], current_model: str) -> str | None:
-    """Arrow-key interactive model picker. Returns selected model id or None."""
+    """Arrow-key interactive model picker with viewport scrolling.
+    Returns selected model id or None."""
     ids = [m.get("id", m.get("name", "?")) for m in models]
     if not ids:
         return None
@@ -1030,7 +1031,6 @@ def _pick_model_interactive(models: list[dict], current_model: str) -> str | Non
             sel = i
             break
 
-    # Try raw mode
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     try:
@@ -1045,16 +1045,16 @@ def _pick_model_interactive(models: list[dict], current_model: str) -> str | Non
                 elif seq == b"[B":  # Down
                     sel = (sel + 1) % len(ids)
                 elif seq == b"[5":  # Page Up
-                    os.read(fd, 1)  # consume ~
+                    os.read(fd, 1)
                     sel = max(0, sel - 10)
                 elif seq == b"[6":  # Page Down
-                    os.read(fd, 1)  # consume ~
+                    os.read(fd, 1)
                     sel = min(len(ids) - 1, sel + 10)
-                elif seq[0:1] == b"" or seq == b"\x1b":  # Escape
+                elif seq[0:1] == b"" or seq == b"\x1b":
                     return None
-            elif ch in (b"\r", b"\n"):  # Enter
+            elif ch in (b"\r", b"\n"):
                 return ids[sel]
-            elif ch == b"\x03":  # Ctrl+C
+            elif ch == b"\x03":
                 return None
             elif ch == b"q":
                 return None
@@ -1064,18 +1064,54 @@ def _pick_model_interactive(models: list[dict], current_model: str) -> str | Non
 
 
 def _pick_draw(ids: list[str], sel: int, current: str) -> None:
-    """Render the model picker list."""
-    sys.stdout.write("\x1b[?25l")  # hide cursor
-    sys.stdout.write("\x1b[2J\x1b[H")  # clear screen, cursor home
-    sys.stdout.write("\033[1mSelect a model:\033[0m  (\u2191\u2193 navigate  Enter select  q cancel)\n\n")
-    for i, mid in enumerate(ids):
-        prefix = "\033[32m  \u25b6 \033[0m" if i == sel else "    "
-        marker = " \033[90m(current)\033[0m" if mid == current else ""
-        # Truncate display name if too long
-        display = mid if len(mid) <= 48 else mid[:45] + "..."
-        line = f"{prefix}{display}{marker}\n"
-        sys.stdout.write(line)
-    sys.stdout.write(f"\n\033[90m[{sel + 1}/{len(ids)}]\033[0m")
+    """Render the model picker with viewport scrolling — only visible rows."""
+    import shutil
+    tw = shutil.get_terminal_size().columns
+    # Reserve: 1 header + 1 blank + 1 blank + 1 counter = 4 lines
+    # Also 1 line for "↑ more" / "↓ more" indicators when applicable
+    HEADER_LINES = 5
+    try:
+        th = shutil.get_terminal_size().lines
+    except Exception:
+        th = 24
+    viewport_size = max(4, th - HEADER_LINES)
+
+    # Clamp selection into viewport
+    top = sel - viewport_size // 2
+    top = max(0, min(top, max(0, len(ids) - viewport_size)))
+    bottom = min(top + viewport_size, len(ids))
+
+    sys.stdout.write("\x1b[?25l")        # hide cursor
+    sys.stdout.write("\x1b[2J\x1b[H")    # clear screen, cursor home
+    sys.stdout.write(f"\033[1mSelect a model:\033[0m  (\u2191\u2193 navigate  Enter select  q cancel)\n\n")
+
+    if top > 0:
+        sys.stdout.write(f"  \033[90m\u25b2 {top} more above\033[0m\n")
+    else:
+        sys.stdout.write("\n")
+
+    for i in range(top, bottom):
+        mid = ids[i]
+        # Calculate max display width: tw - prefix(4) - marker(~12) - margin(2)
+        max_name = tw - 20
+        if max_name < 10:
+            max_name = 10
+        display = mid if len(mid) <= max_name else mid[:max_name - 3] + "..."
+        if i == sel:
+            prefix = "\033[32m  \u25b6 \033[0m"
+            marker = " \033[90m(current)\033[0m" if mid == current else ""
+        else:
+            prefix = "    "
+            marker = " \033[90m(current)\033[0m" if mid == current else ""
+        sys.stdout.write(f"{prefix}\033[1m{display}\033[0m{marker}\n")
+
+    if bottom < len(ids):
+        remaining = len(ids) - bottom
+        sys.stdout.write(f"  \033[90m\u25bc {remaining} more below\033[0m\n")
+    else:
+        sys.stdout.write("\n")
+
+    sys.stdout.write(f"\033[90m[{sel + 1}/{len(ids)}]\033[0m")
     sys.stdout.flush()
 
 
