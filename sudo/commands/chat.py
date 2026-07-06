@@ -1187,26 +1187,33 @@ def run_chat(args) -> int:
         try:
             messages = trim_context(messages, provider.model)
             _in_think = False
-            _think_buf = ""
+            _buf = ""
+            _OPEN = "<think>"
+            _CLOSE = "</think>"
+            _MAX_LOOK = max(len(_OPEN), len(_CLOSE))
             for chunk in chat_stream(provider, messages, usage_stats=usage_stats):
                 for char in chunk:
                     current_response += char
                     if _in_think:
-                        _think_buf += char
-                        if _think_buf.endswith("</think>"):
+                        _buf += char
+                        if _buf.endswith(_CLOSE):
                             _in_think = False
-                            _think_buf = ""
+                            _buf = ""
                         continue
-                    if current_response.endswith("<think>"):
+                    _buf += char
+                    if len(_buf) > _MAX_LOOK:
+                        safe = _buf[0]
+                        _buf = _buf[1:]
+                        if not quiet:
+                            sys.stdout.write(safe)
+                    if _buf.endswith(_OPEN):
                         _in_think = True
-                        _think_buf = "<think>"
-                        sys.stdout.write("\b" * 7)
-                        sys.stdout.write(" " * 7)
-                        sys.stdout.write("\b" * 7)
-                        sys.stdout.flush()
-                        continue
-                    if not quiet:
-                        print(char, end="", flush=True)
+                        _buf = ""
+            for safe in _buf:
+                if not quiet:
+                    sys.stdout.write(safe)
+            if not quiet:
+                sys.stdout.flush()
         except Exception as e:
             if json_output:
                 print(json.dumps({"error": str(e)}))
@@ -1562,34 +1569,46 @@ def run_chat(args) -> int:
                 try:
                     is_start_of_line = True
                     _in_think = False
-                    _think_buf = ""
+                    _buf = ""  # ring buffer for tag detection
+                    _OPEN = "<think>"
+                    _CLOSE = "</think>"
+                    _MAX_LOOK = max(len(_OPEN), len(_CLOSE))  # 8
                     for chunk in chat_stream(provider, messages, usage_stats=usage_stats):
                         for char in chunk:
                             current_response += char
                             if _in_think:
-                                _think_buf += char
-                                if _think_buf.endswith("</think>"):
+                                _buf += char
+                                if _buf.endswith(_CLOSE):
                                     _in_think = False
-                                    _think_buf = ""
+                                    _buf = ""
                                 continue
-                            # Check for opening think tag
-                            if current_response.endswith("<think>"):
+                            # Not in think mode — buffer and check for opening tag
+                            _buf += char
+                            if len(_buf) > _MAX_LOOK:
+                                # Flush the oldest char — it can't be part of a tag anymore
+                                safe = _buf[0]
+                                _buf = _buf[1:]
+                                if safe == "\n":
+                                    is_start_of_line = True
+                                if is_start_of_line:
+                                    if safe != "\n":
+                                        sys.stdout.write("   ")
+                                        is_start_of_line = False
+                                sys.stdout.write(safe)
+                            # Check if buffer ends with opening think tag
+                            if _buf.endswith(_OPEN):
                                 _in_think = True
-                                _think_buf = "<think>"
-                                # Remove the partial tag from what was already printed
-                                # (it was printed char-by-char, so undo the last 7 chars)
-                                sys.stdout.write("\b" * 7)
-                                sys.stdout.write(" " * 7)
-                                sys.stdout.write("\b" * 7)
-                                sys.stdout.flush()
-                                continue
-                            if is_start_of_line:
-                                if char != "\n":
-                                    print("   ", end="", flush=True)
-                                    is_start_of_line = False
-                            if char == "\n":
-                                is_start_of_line = True
-                            print(char, end="", flush=True)
+                                _buf = ""  # discard the tag from buffer
+                    # Flush remaining buffer
+                    for safe in _buf:
+                        if safe == "\n":
+                            is_start_of_line = True
+                        if is_start_of_line:
+                            if safe != "\n":
+                                sys.stdout.write("   ")
+                                is_start_of_line = False
+                        sys.stdout.write(safe)
+                    sys.stdout.flush()
                 except Exception as e:
                     print(f"\n\033[31mError during stream: {e}\033[0m")
                     break
