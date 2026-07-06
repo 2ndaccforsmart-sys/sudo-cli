@@ -937,7 +937,9 @@ _COMMANDS = {
 
 
 def _pick_command_dropdown(prefix: str = "/") -> str | None:
-    """Raw-mode dropdown for slash commands. Returns selected command or None."""
+    """Raw-mode dropdown for slash commands. Handles ALL input char-by-char.
+    Type to filter, arrows to navigate, Enter to select, Esc to cancel.
+    Returns selected command string (with args) or None."""
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     sel = 0
@@ -950,12 +952,16 @@ def _pick_command_dropdown(prefix: str = "/") -> str | None:
             _draw_cmd_dropdown(buf, cmds, sel)
             ch = os.read(fd, 1)
             if ch in (b"\r", b"\n"):
-                return cmds[sel] if cmds else None
+                if cmds:
+                    return cmds[sel]
+                return buf
             if ch == b"\x03":
                 return None
             if ch == b"\x7f":
-                buf = buf[:-1] if len(buf) > 1 else "/"
+                buf = buf[:-1] if len(buf) > 1 else ""
                 sel = 0
+                if not buf:
+                    return None
                 continue
             if ch == b"\x1b":
                 seq = os.read(fd, 2)
@@ -1161,14 +1167,32 @@ def run_chat(args) -> int:
 
     while True:
         try:
-            try:
-                if _session is not None:
-                    user_input = _session.prompt("> ").strip()
-                else:
-                    user_input = input("> ").strip()
-            except (KeyboardInterrupt, EOFError):
+            # Print prompt and read first keystroke to detect "/" for dropdown
+            sys.stdout.write("> ")
+            sys.stdout.flush()
+            fd = sys.stdin.fileno()
+            first = os.read(fd, 1)
+            if first in (b"\x03", b""):
                 print("\nExiting chat. Goodbye!")
                 break
+            if first == b"/":
+                # Enter dropdown mode — handles all input from here
+                picked = _pick_command_dropdown("/")
+                if not picked:
+                    continue
+                user_input = picked
+            else:
+                # Not a slash command — use prompt_toolkit for the rest
+                rest = first.decode("utf-8", errors="ignore")
+                try:
+                    if _session is not None:
+                        rest += _session.prompt("").strip()
+                    else:
+                        rest += input("").strip()
+                except (KeyboardInterrupt, EOFError):
+                    print("\nExiting chat. Goodbye!")
+                    break
+                user_input = rest
                 
             if not user_input:
                 continue
@@ -1177,25 +1201,6 @@ def run_chat(args) -> int:
                 cmd_parts = user_input.split(None, 1)
                 cmd = cmd_parts[0].lower()
                 cmd_arg = cmd_parts[1].strip() if len(cmd_parts) > 1 else ""
-
-                # If just "/" or incomplete command, show dropdown
-                if cmd not in _COMMANDS:
-                    matches = [c for c in _COMMANDS if c.startswith(cmd)]
-                    if len(matches) == 1:
-                        cmd = matches[0]
-                        cmd_arg = cmd_arg
-                    elif len(matches) > 1:
-                        picked = _pick_command_dropdown(cmd)
-                        if not picked:
-                            continue
-                        cmd = picked
-                        cmd_arg = ""
-                    else:
-                        picked = _pick_command_dropdown(cmd)
-                        if not picked:
-                            continue
-                        cmd = picked
-                        cmd_arg = ""
                 
                 if cmd in ("/exit", "/quit"):
                     print("Goodbye!")
