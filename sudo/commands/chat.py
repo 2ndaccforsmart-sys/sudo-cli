@@ -365,28 +365,20 @@ def parse_usage(response: dict, api_type: str) -> tuple[int, int]:
 
 
 # Track status bar state for in-place updates
-_status_bar_cursor_pos: str | None = None  # Saved ANSI cursor position string
+_status_bar_printed = False
 STATUS_BAR_HEIGHT = 3  # separator + status + separator
 
 
 def print_status_bar(model: str, messages: list[dict], last_response_time: float, start_time: float) -> None:
-    global _status_bar_cursor_pos
+    global _status_bar_printed
     tw = terminal_width()
 
-    # If we printed a status bar before, move up and clear those lines
-    if _status_bar_cursor_pos is not None:
-        # Move up past everything printed since last status bar,
-        # then clear the old 3 status bar lines
-        sys.stdout.write("\x1b[s")       # save current cursor
-        sys.stdout.write(_status_bar_cursor_pos)  # restore to saved position
+    # If we printed a status bar before, clear the old3 lines before reprinting
+    if _status_bar_printed:
         sys.stdout.write(f"\x1b[{STATUS_BAR_HEIGHT}A")  # move up 3 lines
         sys.stdout.write(f"\x1b[{STATUS_BAR_HEIGHT}J")  # clear from cursor down
         sys.stdout.flush()
-
-    # Save cursor position before we print the status bar
-    sys.stdout.write("\x1b[s")
-    sys.stdout.flush()
-    _status_bar_cursor_pos = "\x1b[u"  # restore sequence to get back here
+    _status_bar_printed = True
 
     total_chars = sum(len(m["content"]) for m in messages)
     tokens = total_chars // 4
@@ -1254,6 +1246,11 @@ def run_chat(args) -> int:
             if first in (b"\x03", b""):
                 print("\nExiting chat. Goodbye!")
                 break
+            # Handle escape sequences (arrow keys, etc) — discard them
+            if first == b"\x1b":
+                seq = os.read(fd, 2)
+                # Arrow keys / Page keys — ignore and re-prompt
+                continue
             if first == b"/":
                 # Enter dropdown mode — handles all input from here
                 picked = _pick_command_dropdown("/")
@@ -1406,7 +1403,7 @@ def run_chat(args) -> int:
                     continue
                 elif cmd == "/redraw":
                     print("\033[2J\033[H", end="", flush=True)
-                    _status_bar_cursor_pos = None  # screen cleared, reset tracking
+                    _status_bar_printed = False  # screen cleared, reset tracking
                     if not quiet:
                         print_banner(__version__)
                     print_status_bar(provider.model, messages, last_response_time, start_time)
