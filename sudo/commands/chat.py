@@ -29,6 +29,59 @@ from sudo.utils.constants import estimate_model_cost
 from sudo import __version__
 
 
+import threading
+
+class SpinnerThread(threading.Thread):
+    def __init__(self, initial_label: str = "Thinking..."):
+        super().__init__()
+        self.label = initial_label
+        self.running = True
+        self.frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"]
+        self.index = 0
+        self.auto_cycle = False
+        self.cycle_states = []
+        
+    def start_cycling(self, states: list[str]):
+        self.auto_cycle = True
+        self.cycle_states = states
+        
+    def run(self):
+        sys.stdout.write("\x1b[?25l")
+        sys.stdout.flush()
+        start_time = time.time()
+        while self.running:
+            frame = self.frames[self.index % len(self.frames)]
+            
+            if self.auto_cycle and self.cycle_states:
+                elapsed = time.time() - start_time
+                state_idx = int(elapsed / 1.5) % len(self.cycle_states)
+                self.label = self.cycle_states[state_idx]
+                
+            if "[ ⠋ ]" in self.label:
+                display = self.label.replace("⠋", frame)
+            elif any(f in self.label for f in self.frames):
+                display = self.label
+                for f in self.frames:
+                    display = display.replace(f, frame)
+            else:
+                display = f"[ {frame} ] {self.label}"
+                
+            sys.stdout.write(f"\r\033[2K\033[1;36m{display}\033[0m")
+            sys.stdout.flush()
+            self.index += 1
+            time.sleep(0.08)
+            
+    def stop(self):
+        self.running = False
+        try:
+            self.join()
+        except RuntimeError:
+            pass
+        sys.stdout.write("\r\033[2K")
+        sys.stdout.write("\x1b[?25h")
+        sys.stdout.flush()
+
+
 def _strip_think_tags(text: str) -> str:
     """Remove <think>...</think> tags and return only visible content."""
     import re
@@ -1925,18 +1978,41 @@ def run_chat(args) -> int:
                     tw = terminal_width()
                     print(f"\033[38;5;208m─  ⚡ SUDO BTW  " + "─" * (tw - 16) + "\033[0m")
                     try:
+                        spinner = SpinnerThread()
+                        spinner.start_cycling([
+                            "◜(｡ •́︿•̀｡) pondering...",
+                            "[ ⠋ ] 🧠 Thinking...",
+                            "◠(⊙_⊙) contemplating...",
+                            "[ ⠙ ] 🧐 Reflecting...",
+                            "[ ⠹ ] 🔮 Analyzing...",
+                            "[ ⠸ ] 🧬 Synthesizing...",
+                            "(◔_◔) pondering...",
+                            "[ ⠼ ] ✍️  Self-Correcting...",
+                            "[ 🤖 ] 💭 Internal Monologue..."
+                        ])
+                        spinner.start()
+
                         usage_stats = {"prompt_tokens": 0, "completion_tokens": 0}
                         stream = chat_stream(provider, temp_msgs, usage_stats=usage_stats)
                         if not cfg.show_reasoning:
                             stream = stream_filter_think_tags(stream)
+                            
+                        spinner_stopped = False
                         for chunk in stream:
+                            if not spinner_stopped:
+                                spinner.stop()
+                                spinner_stopped = True
                             print(chunk, end="", flush=True)
+                        if not spinner_stopped:
+                            spinner.stop()
                         print()
                         
                         session_prompt_tokens += usage_stats["prompt_tokens"]
                         session_completion_tokens += usage_stats["completion_tokens"]
                         add_cumulative_usage(usage_stats["prompt_tokens"], usage_stats["completion_tokens"])
                     except Exception as e:
+                        if 'spinner' in locals() or 'spinner' in globals():
+                            spinner.stop()
                         print(f"\033[31mError during side question: {e}\033[0m")
                     print("\033[38;5;208m" + "─" * tw + "\033[0m\n")
                     continue
@@ -2212,6 +2288,20 @@ def run_chat(args) -> int:
                 # Trim context if approaching token limit
                 messages = trim_context(messages, provider.model)
                 try:
+                    spinner = SpinnerThread()
+                    spinner.start_cycling([
+                        "◜(｡ •́︿•̀｡) pondering...",
+                        "[ ⠋ ] 🧠 Thinking...",
+                        "◠(⊙_⊙) contemplating...",
+                        "[ ⠙ ] 🧐 Reflecting...",
+                        "[ ⠹ ] 🔮 Analyzing...",
+                        "[ ⠸ ] 🧬 Synthesizing...",
+                        "(◔_◔) pondering...",
+                        "[ ⠼ ] ✍️  Self-Correcting...",
+                        "[ 🤖 ] 💭 Internal Monologue..."
+                    ])
+                    spinner.start()
+
                     raw_response = []
                     def raw_logger(stream):
                         for chunk in stream:
@@ -2225,14 +2315,22 @@ def run_chat(args) -> int:
                         filtered_stream = stream_filter_think_tags(logged_stream)
 
                     visible_response = ""
+                    spinner_stopped = False
                     for chunk in filtered_stream:
+                        if not spinner_stopped:
+                            spinner.stop()
+                            spinner_stopped = True
                         print(chunk, end="", flush=True)
                         visible_response += chunk
+
+                    if not spinner_stopped:
+                        spinner.stop()
 
                     current_response = "".join(raw_response)
                     if not visible_response.strip() and current_response.strip():
                         print(current_response, end="", flush=True)
                 except Exception as e:
+                    spinner.stop()
                     print(f"\n\033[31mError during stream: {e}\033[0m")
                     break
                     
@@ -2248,7 +2346,31 @@ def run_chat(args) -> int:
                     for c in calls:
                         run_hooks("on_tool_before", c.get("name"), c.get("arguments", {}))
 
+                tool_spinner = None
+                if calls:
+                    c = calls[0]
+                    t_name = c.get("name", "")
+                    if t_name in ("read_file", "gcs_read_file"):
+                        lbl = "[ ⠹ ] 📄 Reading File..."
+                    elif t_name in ("write_file", "gcs_write_file"):
+                        lbl = "[ ⠸ ] 📝 Patching File..."
+                    elif t_name in ("run_command", "github_push"):
+                        lbl = "[ ⠧ ] 💻 Terminal..."
+                    elif t_name == "browse":
+                        lbl = "[ ⠋ ] 🌐 Browsing..."
+                    else:
+                        lbl = f"[ ⠦ ] 🛠️  Running Tool {t_name}..."
+                    
+                    if "gcs" in t_name:
+                        lbl = f"(=^・ω・^=) kneading... {lbl}"
+                        
+                    tool_spinner = SpinnerThread(lbl)
+                    tool_spinner.start()
+
                 had_tool_call, tool_output = tools.parse_and_execute_tools(current_response)
+
+                if tool_spinner:
+                    tool_spinner.stop()
 
                 if calls:
                     for c in calls:
@@ -2256,7 +2378,6 @@ def run_chat(args) -> int:
 
                 if had_tool_call:
                     messages.append({"role": "assistant", "content": current_response})
-                    # Check if the output indicates an error/failure
                     is_error = False
                     if "error" in tool_output.lower() or "exception" in tool_output.lower():
                         is_error = True
@@ -2266,8 +2387,10 @@ def run_chat(args) -> int:
                             is_error = True
                             
                     if is_error:
+                        print("\033[31m[ ❌ ] ⚠️  Failed / Halted\033[0m")
                         print(f"\033[31m❌ {tool_output.strip()}\033[0m")
                     else:
+                        print("\033[32m[ ✅ ] 🎉 Task Finished!\033[0m")
                         clean_status = tool_output.splitlines()[0] if tool_output.strip() else ""
                         truncated = clean_status[:63] + "..." if len(clean_status) > 63 else clean_status
                         print(f"\033[36m⚙️ {truncated}\033[0m")
@@ -2278,6 +2401,7 @@ def run_chat(args) -> int:
                     if current_response.strip():
                         messages.append({"role": "assistant", "content": current_response})
                         save_active_session_messages(active_session_id, messages)
+                        print("\n\033[32m✧٩(ˊᗜˋ*)و✧ got it!\033[0m")
                     break
                     
             print()
