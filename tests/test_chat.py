@@ -15,6 +15,8 @@ from sudo.commands.chat import (
     trim_context,
     parse_usage,
     stream_filter_think_tags,
+    _draw_cmd_dropdown,
+    _pick_command_dropdown,
 )
 
 
@@ -195,3 +197,21 @@ class TestStreamFilterThinkTags:
         stream = ["Hello <thi", "s is not a tag"]
         result = list(stream_filter_think_tags(stream))
         assert "".join(result) == "Hello <this is not a tag"
+
+
+class TestDropdown:
+    @patch("sys.stdout.write")
+    def test_draw_cmd_dropdown(self, mock_write):
+        _draw_cmd_dropdown("/ne", ["/new"], 0)
+        written = "".join(call.args[0] for call in mock_write.call_args_list)
+        assert "> /ne" in written
+        assert "/new" in written
+        assert "\x1b[" in written
+
+    @patch("sudo.commands.chat._IS_UNIX", False)
+    @patch("msvcrt.getch")
+    @patch("sys.stdout.write")
+    def test_pick_command_dropdown_windows(self, mock_write, mock_getch):
+        mock_getch.side_effect = [b"\r"]
+        picked = _pick_command_dropdown("/clear")
+        assert picked == "/clear"

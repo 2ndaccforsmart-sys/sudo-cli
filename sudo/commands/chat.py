@@ -16,6 +16,8 @@ _IS_UNIX = not sys.platform.startswith("win")
 if _IS_UNIX:
     import tty
     import termios
+else:
+    import msvcrt
 
 from sudo.core.config import load, save
 from sudo.core.provider import PROVIDER_REGISTRY, ProviderFactory, BaseProvider, TIER_LABELS, TIER_ORDER
@@ -1017,64 +1019,137 @@ _COMMANDS = {
 }
 
 
+def _clear_dropdown_display(buf: str, cmds: list[str]) -> None:
+    """Clear the dropdown list from the terminal view."""
+    sys.stdout.write("\x1b[?25l\r\x1b[J\x1b[?25h")
+    sys.stdout.flush()
+
+
 def _pick_command_dropdown(prefix: str = "/") -> str | None:
-    """Raw-mode dropdown for slash commands. Handles ALL input char-by-char.
+    """Raw-mode dropdown for slash commands.
     Type to filter, arrows to navigate, Enter to select, Esc to cancel.
     Returns selected command string (with args) or None."""
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
+    if _IS_UNIX:
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        tty.setraw(fd)
+    else:
+        fd = None
+        old = None
+
     sel = 0
     buf = prefix
+    
     try:
-        tty.setraw(fd)
         while True:
             cmds = [c for c in _COMMANDS if c.startswith(buf)]
             sel = min(sel, max(0, len(cmds) - 1))
             _draw_cmd_dropdown(buf, cmds, sel)
-            ch = os.read(fd, 1)
+            
+            if _IS_UNIX:
+                ch = os.read(fd, 1)
+            else:
+                ch = msvcrt.getch()
+                
             if ch in (b"\r", b"\n"):
                 if cmds:
-                    return cmds[sel]
-                return buf
-            if ch == b"\x03":
+                    picked = cmds[sel]
+                else:
+                    picked = buf
+                _clear_dropdown_display(buf, cmds)
+                print(f"> {picked}")
+                return picked
+                
+            if ch == b"\x03":  # Ctrl+C
+                _clear_dropdown_display(buf, cmds)
                 return None
-            if ch == b"\x7f":
+                
+            if ch == b"\x1b" and _IS_UNIX:  # Escape or Arrow key on Unix
+                import select
+                r, _, _ = select.select([fd], [], [], 0.05)
+                if r:
+                    seq = os.read(fd, 2)
+                    if seq == b"[A":  # Up Arrow
+                        sel = (sel - 1) % len(cmds) if cmds else 0
+                    elif seq == b"[B":  # Down Arrow
+                        sel = (sel + 1) % len(cmds) if cmds else 0
+                else:
+                    _clear_dropdown_display(buf, cmds)
+                    return None
+                continue
+                
+            if ch == b"\xe0" and not _IS_UNIX:  # Special key on Windows (arrows)
+                next_ch = msvcrt.getch()
+                if next_ch == b"H":  # Up Arrow
+                    sel = (sel - 1) % len(cmds) if cmds else 0
+                elif next_ch == b"P":  # Down Arrow
+                    sel = (sel + 1) % len(cmds) if cmds else 0
+                continue
+                
+            if ch == b"\x00" and not _IS_UNIX:  # Alternative special key on Windows
+                msvcrt.getch()
+                continue
+
+            if ch in (b"\x7f", b"\x08"):  # Backspace
                 buf = buf[:-1] if len(buf) > 1 else ""
                 sel = 0
                 if not buf:
+                    _clear_dropdown_display(buf, cmds)
                     return None
                 continue
-            if ch == b"\x1b":
-                seq = os.read(fd, 2)
-                if seq == b"[A":
-                    sel = (sel - 1) % len(cmds) if cmds else 0
-                elif seq == b"[B":
-                    sel = (sel + 1) % len(cmds) if cmds else 0
-                elif seq[0:1] == b"":
-                    return None
-                continue
-            c = ch.decode("utf-8", errors="ignore")
-            if c.isprintable():
-                buf += c
-                sel = 0
+                
+            if ch == b"\x1b" and not _IS_UNIX:  # Escape on Windows
+                _clear_dropdown_display(buf, cmds)
+                return None
+                
+            try:
+                c = ch.decode("utf-8", errors="ignore")
+                if c.isprintable():
+                    buf += c
+                    sel = 0
+            except Exception:
+                pass
     finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+        if _IS_UNIX and old is not None:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
 def _draw_cmd_dropdown(buf: str, cmds: list[str], sel: int) -> None:
-    """Render the command dropdown."""
+    """Render the command dropdown in-place below the prompt."""
+    # Hide cursor
     sys.stdout.write("\x1b[?25l")
-    sys.stdout.write("\x1b[2J\x1b[H")
-    sys.stdout.write(f"\033[1mCommands\033[0m  \033[90m(type to filter, \u2191\u2193 navigate, Enter select, Esc cancel)\033[0m\n\n")
-    sys.stdout.write(f"  \033[36m{buf}\033[0m\n\n")
-    if not cmds:
-        sys.stdout.write("  \033[90m(no matches)\033[0m\n")
-    else:
+    
+    # Move to start of line, clear everything below
+    sys.stdout.write("\r\x1b[J")
+    
+    # Print prompt and buffer
+    sys.stdout.write(f"> {buf}")
+    
+    # Draw dropdown options below the prompt
+    N = len(cmds)
+    if N > 0:
+        max_cmd_len = max(len(c) for c in cmds)
         for i, cmd in enumerate(cmds):
-            arrow = "\033[32m  \u25b6 \033[0m" if i == sel else "    "
+            sys.stdout.write("\n")
             desc = _COMMANDS.get(cmd, "")
-            sys.stdout.write(f"{arrow}\033[1m{cmd}\033[0m  \033[90m{desc}\033[0m\n")
-    sys.stdout.write(f"\n\033[90m[{sel+1}/{len(cmds)}]\033[0m")
+            
+            # Pad command for description alignment
+            padded_cmd = cmd.ljust(max_cmd_len + 4)
+            
+            if i == sel:
+                # Highlight active command (blue/dark gray background or reverse video)
+                sys.stdout.write(f"\033[48;5;238m\033[38;5;255m {padded_cmd}{desc} \033[0m")
+            else:
+                # Normal command display
+                sys.stdout.write(f"\033[38;5;255m{padded_cmd}\033[38;5;244m{desc}\033[0m")
+        
+        # Move cursor back up to the prompt line
+        sys.stdout.write(f"\x1b[{N}A")
+        
+    # Position cursor at the end of the search buffer
+    sys.stdout.write(f"\r\x1b[{len('> ') + len(buf)}C")
+    # Show cursor
+    sys.stdout.write("\x1b[?25h")
     sys.stdout.flush()
 
 
@@ -1301,13 +1376,23 @@ def run_chat(args) -> int:
             # Print prompt and read first keystroke to detect "/" for dropdown
             sys.stdout.write("> ")
             sys.stdout.flush()
-            fd = sys.stdin.fileno()
-            first = os.read(fd, 1)
+            if _IS_UNIX:
+                fd = sys.stdin.fileno()
+                first = os.read(fd, 1)
+            else:
+                first = msvcrt.getch()
+                if first in (b"\xe0", b"\x00"):
+                    msvcrt.getch()
+                    continue
+                if first != b"/":
+                    sys.stdout.write(first.decode("utf-8", errors="ignore"))
+                    sys.stdout.flush()
+
             if first in (b"\x03", b""):
                 print("\nExiting chat. Goodbye!")
                 break
-            # Handle escape sequences (arrow keys, etc) — discard them
-            if first == b"\x1b":
+            # Handle escape sequences (arrow keys, etc) — discard them on Unix
+            if first == b"\x1b" and _IS_UNIX:
                 seq = os.read(fd, 2)
                 # Arrow keys / Page keys — ignore and re-prompt
                 continue
