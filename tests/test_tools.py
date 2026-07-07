@@ -245,3 +245,53 @@ def test_execute_save_skill(tmp_path):
         assert "refactor" in skills
         assert skills["refactor"]["description"] == "Refactor code"
 
+
+def test_browse_tool_registered():
+    assert "browse" in TOOL_REGISTRY
+
+
+def test_parse_legacy_browse_xml():
+    text = '<tool:browse url="https://example.com"/>'
+    calls = parse_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0]["name"] == "browse"
+    assert calls[0]["arguments"]["url"] == "https://example.com"
+
+
+@patch("httpx.get")
+def test_execute_browse_success(mock_get):
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.text = "<html><body><h1>Hello World</h1><script>alert(1)</script></body></html>"
+    mock_get.return_value = mock_resp
+    
+    result = execute_tool("browse", {"url": "https://example.com"})
+    assert "Hello World" in result
+    assert "alert" not in result  # script tags cleaned
+
+
+def test_github_push_tool_registered():
+    assert "github_push" in TOOL_REGISTRY
+
+
+def test_parse_legacy_github_push_xml():
+    text = '<tool:github_push commit_message="feat: cool feature"/>'
+    calls = parse_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0]["name"] == "github_push"
+    assert calls[0]["arguments"]["commit_message"] == "feat: cool feature"
+
+
+@patch("subprocess.run")
+def test_execute_github_push(mock_run):
+    mock_res = MagicMock()
+    mock_res.stdout = "done"
+    mock_res.stderr = ""
+    mock_run.return_value = mock_res
+    
+    result = execute_tool("github_push", {"commit_message": "feat: test", "branch": "main"})
+    assert "git add output" in result
+    assert "git commit output" in result
+    assert "git push output" in result
+
+

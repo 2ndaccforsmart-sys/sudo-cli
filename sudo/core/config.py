@@ -40,6 +40,13 @@ class Config:
     model: Optional[str] = None
     base_url: Optional[str] = None
     extra_providers: list[dict] = field(default_factory=list)
+    personality: Optional[str] = None
+    always_on_skills: list[str] = field(default_factory=list)
+    show_reasoning: bool = False
+    yolo_mode: bool = False
+    gcs_bucket: Optional[str] = None
+    gcs_key_file: Optional[str] = None
+    mcp_servers: dict = field(default_factory=dict)
 
     def get_provider_config(self, name: Optional[str] = None) -> ProviderConfig:
         """Resolve provider config, consulting env vars for API keys.
@@ -113,6 +120,13 @@ def _parse(raw: dict) -> Config:
         model=raw.get("model"),
         base_url=raw.get("base_url"),
         extra_providers=raw.get("extra_providers", []),
+        personality=raw.get("personality"),
+        always_on_skills=raw.get("always_on_skills", []),
+        show_reasoning=raw.get("show_reasoning", False),
+        yolo_mode=raw.get("yolo_mode", False),
+        gcs_bucket=raw.get("gcs_bucket"),
+        gcs_key_file=raw.get("gcs_key_file"),
+        mcp_servers=raw.get("mcp_servers", {}),
     )
 
 
@@ -125,6 +139,13 @@ def save(cfg: Config) -> None:
         "model": cfg.model,
         "base_url": cfg.base_url,
         "extra_providers": cfg.extra_providers,
+        "personality": cfg.personality,
+        "always_on_skills": cfg.always_on_skills,
+        "show_reasoning": cfg.show_reasoning,
+        "yolo_mode": cfg.yolo_mode,
+        "gcs_bucket": cfg.gcs_bucket,
+        "gcs_key_file": cfg.gcs_key_file,
+        "mcp_servers": cfg.mcp_servers,
     }
     if yaml is not None:
         CONFIG_YAML.write_text(yaml.safe_dump(data, default_flow_style=False, sort_keys=False))

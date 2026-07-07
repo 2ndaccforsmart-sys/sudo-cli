@@ -168,6 +168,46 @@ def _handle_read_file(path: str) -> str:
         return f"[Tool Error reading file: {e}]"
 
 
+def _clean_html(html: str) -> str:
+    import re
+    import html as html_lib
+    html = re.sub(r'<(script|style)\b[^>]*>([\s\S]*?)<\/\1>', '', html, flags=re.IGNORECASE)
+    text = re.sub(r'<[^>]+>', ' ', html)
+    text = html_lib.unescape(text)
+    lines = (line.strip() for line in text.splitlines())
+    return "\n".join(line for line in lines if line)
+
+
+def _handle_browse(url: str) -> str:
+    try:
+        import httpx
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        resp = httpx.get(url, headers=headers, follow_redirects=True, timeout=15)
+        if resp.status_code != 200:
+            return f"[Tool Error: Failed to fetch {url} (status code {resp.status_code})]"
+        text = _clean_html(resp.text)
+        if len(text) > 8000:
+            text = text[:8000] + "\n... [truncated]"
+        return f"[Tool Output — browse {url}]:\n{text}"
+    except Exception as e:
+        return f"[Tool Error browsing URL: {e}]"
+
+
+def _handle_github_push(commit_message: str, branch: str = "main") -> str:
+    try:
+        import subprocess
+        add_res = subprocess.run("git add .", shell=True, capture_output=True, text=True, timeout=30)
+        commit_res = subprocess.run(f'git commit -m "{commit_message}"', shell=True, capture_output=True, text=True, timeout=30)
+        push_res = subprocess.run(f"git push origin {branch}", shell=True, capture_output=True, text=True, timeout=60)
+        
+        output = f"git add output: {add_res.stdout} {add_res.stderr}\n"
+        output += f"git commit output: {commit_res.stdout} {commit_res.stderr}\n"
+        output += f"git push output: {push_res.stdout} {push_res.stderr}\n"
+        return f"[Tool Output — github_push]:\n{output}"
+    except Exception as e:
+        return f"[Tool Error performing github_push: {e}]"
+
+
 def _handle_write_file(path: str, content: str) -> str:
     try:
         abs_path = os.path.abspath(path)
@@ -223,20 +263,28 @@ DANGEROUS_CMD_PATTERNS = (
 
 def _handle_run_command(cmd: str, timeout: int = 60) -> str:
     cmd_lower = cmd.lower().strip()
-    for pattern in DANGEROUS_CMD_PATTERNS:
-        if pattern in cmd_lower:
-            try:
-                confirm = input(
-                    f"\033[33m⚠️  Potentially dangerous command detected.\033[0m\n"
-                    f"  Command: {cmd}\n"
-                    f"  Pattern: {pattern}\n"
-                    f"  Type 'yes' to confirm, anything else to cancel: "
-                ).strip().lower()
-            except (KeyboardInterrupt, EOFError):
-                return "[Tool Error: Command cancelled by user]"
-            if confirm != "yes":
-                return "[Tool Error: Command cancelled by user — dangerous command not confirmed]"
-            break
+    try:
+        from sudo.core.config import load
+        cfg = load()
+        yolo = cfg.yolo_mode
+    except Exception:
+        yolo = False
+
+    if not yolo:
+        for pattern in DANGEROUS_CMD_PATTERNS:
+            if pattern in cmd_lower:
+                try:
+                    confirm = input(
+                        f"\033[33m⚠️  Potentially dangerous command detected.\033[0m\n"
+                        f"  Command: {cmd}\n"
+                        f"  Pattern: {pattern}\n"
+                        f"  Type 'yes' to confirm, anything else to cancel: "
+                    ).strip().lower()
+                except (KeyboardInterrupt, EOFError):
+                    return "[Tool Error: Command cancelled by user]"
+                if confirm != "yes":
+                    return "[Tool Error: Command cancelled by user — dangerous command not confirmed]"
+                break
 
     try:
         res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=timeout)
@@ -365,6 +413,25 @@ register_tool(ToolSpec(
     handler=_handle_save_skill,
 ))
 
+register_tool(ToolSpec(
+    name="browse",
+    description="Download and read the text content of any website URL.",
+    parameters={
+        "url": _param("string", "URL of the page to browse", required=True),
+    },
+    handler=_handle_browse,
+))
+
+register_tool(ToolSpec(
+    name="github_push",
+    description="Automatically run git add, commit, and push to GitHub repository.",
+    parameters={
+        "commit_message": _param("string", "Commit message", required=True),
+        "branch": _param("string", "Branch to push to (default: main)", required=False),
+    },
+    handler=_handle_github_push,
+))
+
 
 # ── Tool Call Parsing (backward-compatible XML + JSON for future use) ─────────
 
@@ -396,13 +463,16 @@ def parse_tool_calls(text: str) -> list[dict[str, Any]]:
         "gcs_delete_file": (r'<tool:gcs_delete_file\s+path=["\'](.*?)["\']\s*/>', ["path"]),
         "gcs_make_directory": (r'<tool:gcs_make_directory\s+path=["\'](.*?)["\']\s*/>', ["path"]),
         "save_skill": (r'<tool:save_skill\s+name=["\'](.*?)["\']\s+description=["\'](.*?)["\']\s*>(.*?)</tool:save_skill>', ["name", "description", "system_prompt"]),
+        "browse": (r'<tool:browse\s+url=["\'](.*?)["\']\s*/>', ["url"]),
+        "github_push": (r'<tool:github_push\s+commit_message=["\'](.*?)["\'](?:\s+branch=["\'](.*?)["\'])?\s*/>', ["commit_message", "branch"]),
     }
 
     for name, (pattern, arg_names) in xml_handlers.items():
         for match in re.finditer(pattern, text, re.DOTALL):
             args = {}
-            for i, aname in enumerate(arg_names):
-                val = match.group(i + 1).strip()
+            for idx_grp, aname in enumerate(arg_names):
+                group_val = match.group(idx_grp + 1)
+                val = group_val.strip() if group_val is not None else ""
                 if aname == "timeout":
                     try:
                         val = int(val)

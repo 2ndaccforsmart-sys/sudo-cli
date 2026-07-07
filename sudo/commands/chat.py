@@ -1359,12 +1359,40 @@ def _pick_model_interactive(models: list[dict], current_model: str) -> str | Non
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
+def rebuild_system_instructions(messages: list[dict], cfg: Config, active_skill_prompt: Optional[str] = None) -> None:
+    prompt = SYSTEM_PROMPT
+    if cfg.personality:
+        prompt += f"\n\nPersonality / Custom Instructions:\n{cfg.personality}"
+    from sudo.core.memory import load_memories
+    memories = load_memories()
+    if memories:
+        prompt += "\n\nStored Memories:\n" + "\n".join(f"- {m}" for m in memories)
+    from sudo.core.skills import get_skill
+    always_on_prompts = []
+    for skill_name in cfg.always_on_skills:
+        sk = get_skill(skill_name)
+        if sk:
+            always_on_prompts.append(f"[{skill_name}]: {sk['system_prompt']}")
+    if always_on_prompts:
+        prompt += "\n\nActive Always-On Skills:\n" + "\n\n".join(always_on_prompts)
+    if active_skill_prompt:
+        prompt += f"\n\nActive Skill Prompt:\n{active_skill_prompt}"
+    if messages:
+        if messages[0].get("role") == "system":
+            messages[0]["content"] = prompt
+        else:
+            messages.insert(0, {"role": "system", "content": prompt})
+    else:
+        messages.append({"role": "system", "content": prompt})
+
+
 # ── Main Session Execution Loop ──────────────────────────────────────────────
 
 def run_chat(args) -> int:
     quiet = getattr(args, "quiet", False)
     pipe_input = getattr(args, "pipe_input", None)
     json_output = getattr(args, "json_output", False)
+    continue_session = getattr(args, "continue_session", None)
 
     if not quiet:
         print_banner(__version__)
@@ -1385,21 +1413,54 @@ def run_chat(args) -> int:
         return 1
         
     from sudo.core.plugins import run_hooks
+    from sudo.core.mcp import initialize_mcp_servers, shutdown_mcp_servers
+    initialize_mcp_servers()
 
     sm = SessionManager()
     session_data = sm.load()
     run_hooks("on_chat_start", cfg, provider)
     
-    # Start a new session each run
-    active_session_id = f"session_{int(time.time())}"
-    session_data["active_session_id"] = active_session_id
-    sm.save(session_data)
+    # Load or continue session
+    target_session_id = None
+    if continue_session is not None:
+        s_dir = Path.home() / ".config" / "sudo" / "sessions"
+        if s_dir.exists():
+            files = sorted(s_dir.glob("session_*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+            if continue_session == "":
+                if files:
+                    target_session_id = files[0].stem
+            else:
+                for f in files:
+                    if f.stem == continue_session or f.stem == f"session_{continue_session}":
+                        target_session_id = f.stem
+                        break
+                if not target_session_id:
+                    for f in files:
+                        title = session_data.get(f.stem + "_title", "")
+                        if title.strip().lower() == continue_session.strip().lower():
+                            target_session_id = f.stem
+                            break
     
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    save_active_session_messages(active_session_id, messages)
-        
-    # Synchronize system prompt tools definitions
-    messages[0]["content"] = SYSTEM_PROMPT
+    if target_session_id:
+        active_session_id = target_session_id
+        session_data["active_session_id"] = active_session_id
+        sm.save(session_data)
+        messages = load_active_session_messages(active_session_id)
+        rebuild_system_instructions(messages, cfg)
+        if not quiet:
+            print(f"\033[32mContinuing session: {active_session_id}\033[0m")
+            title = session_data.get(active_session_id + "_title")
+            if title:
+                print(f"  Title: \033[1m{title}\033[0m")
+            print()
+    else:
+        # Start a new session each run
+        active_session_id = f"session_{int(time.time())}"
+        session_data["active_session_id"] = active_session_id
+        sm.save(session_data)
+        messages = []
+        rebuild_system_instructions(messages, cfg)
+        save_active_session_messages(active_session_id, messages)
     
     last_response_time = -1.0
     start_time = time.time()
@@ -1781,6 +1842,39 @@ def run_chat(args) -> int:
                     except Exception as e:
                         print(f"\033[31mError connecting to '{target_provider}': {e}\033[0m\n")
                     continue
+                elif cmd in ("/help", "/h"):
+                    print("Commands:")
+                    print("  /new [name]      Start a new session (fresh session ID + history)")
+                    print("  /reset           Start a new session (alias for /new)")
+                    print("  /clear           Clear conversation history for current session")
+                    print("  /connect [p] [m] Switch provider and/or model")
+                    print("  /model [name]    Show or change model")
+                    print("  /sessions [cmd]  Manage sessions (list, load, new, delete, export, import)")
+                    print("  /resume [name]   Resume/load a previous session")
+                    print("  /personality [t] View or set custom system instructions")
+                    print("  /btw <question>  Ask a quick side question (doesn't affect chat history)")
+                    print("  /config          View or modify configuration values")
+                    print("  /reasoning       Toggle displaying thinking/reasoning outputs")
+                    print("  /yolo            Toggle YOLO mode (skip dangerous commands prompts)")
+                    print("  /tools           List all registered assistant tools")
+                    print("  /memory          Manage preferences memory (add, delete, list, clear)")
+                    print("  /cron            List active cron/scheduled tasks on the system")
+                    print("  /mcp-reload      Reload Model Context Protocol (MCP) server tools")
+                    print("  /skills-reload   Reload available skills from configuration")
+                    print("  /gcs-config      Configure Google Cloud Storage bucket/keys")
+                    print("  /usage           Show token usage and cost stats")
+                    print("  /paste <path>    Attach an image/video to the next message")
+                    print("  /save            Save the current conversation to a file")
+                    print("  /retry           Retry the last message (resend to agent)")
+                    print("  /undo [N]        Back up N user turns and re-prompt (default 1)")
+                    print("  /title [name]    Set a title for the current session")
+                    print("  /history         Show conversation history")
+                    print("  /redraw          Force a full UI repaint (recovers from terminal drift)")
+                    print("  /branch [name]   Branch the current session (explore a different path)")
+                    print("  /fork            Branch the current session (alias for /branch)")
+                    print("  /help            Show this message")
+                    print("  /exit, /quit     Exit chat")
+                    continue
                 elif cmd == "/skills":
                     from sudo.core.skills import load_skills, delete_skill, DEFAULT_SKILLS
                     parts = cmd_arg.split(None, 1)
@@ -1807,23 +1901,279 @@ def run_chat(args) -> int:
                     print("  /skills delete <name>    Delete a custom skill")
                     print()
                     continue
+                elif cmd == "/personality":
+                    if not cmd_arg:
+                        print(f"Current Personality: \033[1m{cfg.personality or '(none)'}\033[0m")
+                        print("Usage: /personality <personality instructions>")
+                    else:
+                        cfg.personality = cmd_arg
+                        save(cfg)
+                        rebuild_system_instructions(messages, cfg)
+                        save_active_session_messages(active_session_id, messages)
+                        print("\033[32mPersonality updated.\033[0m")
+                    print()
+                    continue
+                elif cmd == "/btw":
+                    if not cmd_arg:
+                        print("Usage: /btw <side question>\n")
+                        continue
+                    print(f"\033[36m[btw] Asking side question: {cmd_arg}...\033[0m")
+                    temp_msgs = []
+                    rebuild_system_instructions(temp_msgs, cfg)
+                    temp_msgs.append({"role": "user", "content": cmd_arg})
+                    
+                    tw = terminal_width()
+                    print(f"\033[38;5;208m─  ⚡ SUDO BTW  " + "─" * (tw - 16) + "\033[0m")
+                    try:
+                        usage_stats = {"prompt_tokens": 0, "completion_tokens": 0}
+                        stream = chat_stream(provider, temp_msgs, usage_stats=usage_stats)
+                        if not cfg.show_reasoning:
+                            stream = stream_filter_think_tags(stream)
+                        for chunk in stream:
+                            print(chunk, end="", flush=True)
+                        print()
+                        
+                        session_prompt_tokens += usage_stats["prompt_tokens"]
+                        session_completion_tokens += usage_stats["completion_tokens"]
+                        add_cumulative_usage(usage_stats["prompt_tokens"], usage_stats["completion_tokens"])
+                    except Exception as e:
+                        print(f"\033[31mError during side question: {e}\033[0m")
+                    print("\033[38;5;208m" + "─" * tw + "\033[0m\n")
+                    continue
+                elif cmd == "/resume":
+                    target_session_id = None
+                    s_dir = Path.home() / ".config" / "sudo" / "sessions"
+                    if s_dir.exists():
+                        files = sorted(s_dir.glob("session_*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+                        if not cmd_arg:
+                            print("\n\033[1mAvailable Sessions:\033[0m")
+                            for idx, f in enumerate(files[:10], 1):
+                                title = session_data.get(f.stem + "_title", "")
+                                title_str = f" (\"{title}\")" if title else ""
+                                active_str = " \033[32m[active]\033[0m" if f.stem == active_session_id else ""
+                                print(f"  {idx:2d}. {f.stem}{title_str}{active_str}")
+                            print("\nUsage: /resume <session_id_or_title>\n")
+                            continue
+                        else:
+                            for f in files:
+                                if f.stem == cmd_arg or f.stem == f"session_{cmd_arg}":
+                                    target_session_id = f.stem
+                                    break
+                            if not target_session_id:
+                                for f in files:
+                                    title = session_data.get(f.stem + "_title", "")
+                                    if title.strip().lower() == cmd_arg.strip().lower():
+                                        target_session_id = f.stem
+                                        break
+                    if target_session_id:
+                        active_session_id = target_session_id
+                        session_data["active_session_id"] = active_session_id
+                        sm.save(session_data)
+                        messages = load_active_session_messages(active_session_id)
+                        rebuild_system_instructions(messages, cfg)
+                        save_active_session_messages(active_session_id, messages)
+                        print(f"\033[32mResumed session: {active_session_id}\033[0m\n")
+                    else:
+                        print(f"\033[31mError: Session '{cmd_arg}' not found.\033[0m\n")
+                    continue
+                elif cmd == "/config":
+                    parts = cmd_arg.split(None, 1)
+                    sub = parts[0].lower() if parts else ""
+                    sub_val = parts[1].strip() if len(parts) > 1 else ""
+                    
+                    if sub == "yolo":
+                        cfg.yolo_mode = sub_val.lower() in ("on", "true", "yes", "1")
+                        save(cfg)
+                    elif sub == "reasoning":
+                        cfg.show_reasoning = sub_val.lower() in ("on", "true", "yes", "1")
+                        save(cfg)
+                    elif sub == "bucket":
+                        cfg.gcs_bucket = sub_val
+                        save(cfg)
+                    elif sub == "keyfile":
+                        cfg.gcs_key_file = sub_val
+                        save(cfg)
+                    elif sub == "personality":
+                        cfg.personality = sub_val
+                        save(cfg)
+                        rebuild_system_instructions(messages, cfg)
+                        save_active_session_messages(active_session_id, messages)
+                        
+                    print("\n\033[1msudo Configuration:\033[0m")
+                    print(f"  \033[1mProvider:\033[0m         {cfg.provider or '(none)'}")
+                    print(f"  \033[1mModel:\033[0m            {cfg.model or '(none)'}")
+                    print(f"  \033[1mYOLO Mode:\033[0m        {cfg.yolo_mode}")
+                    print(f"  \033[1mShow Reasoning:\033[0m   {cfg.show_reasoning}")
+                    print(f"  \033[1mGCS Bucket:\033[0m       {cfg.gcs_bucket or '(none)'}")
+                    print(f"  \033[1mGCS Key File:\033[0m     {cfg.gcs_key_file or '(none)'}")
+                    print(f"  \033[1mAlways-on:\033[0m       {', '.join(cfg.always_on_skills) or '(none)'}")
+                    print(f"  \033[1mPersonality:\033[0m     {cfg.personality or '(none)'}")
+                    print("\nUsage:")
+                    print("  /config yolo [on|off]")
+                    print("  /config reasoning [on|off]")
+                    print("  /config bucket <name>")
+                    print("  /config keyfile <path>")
+                    print("  /config personality <text>")
+                    print()
+                    continue
+                elif cmd == "/reasoning":
+                    cfg.show_reasoning = not cfg.show_reasoning
+                    save(cfg)
+                    print(f"\033[32mShow reasoning outputs: {cfg.show_reasoning}\033[0m\n")
+                    continue
+                elif cmd == "/yolo":
+                    cfg.yolo_mode = not cfg.yolo_mode
+                    save(cfg)
+                    print(f"\033[32mYOLO Mode: {cfg.yolo_mode} (dangerous command prompt warnings are {'DISABLED' if cfg.yolo_mode else 'ENABLED'})\033[0m\n")
+                    continue
+                elif cmd == "/tools":
+                    from sudo.core.tools import TOOL_REGISTRY
+                    print("\n\033[1mRegistered Tools:\033[0m")
+                    for name, spec in sorted(TOOL_REGISTRY.items()):
+                        status = " [disabled]" if spec.disabled else ""
+                        print(f"  \033[1;36m{name}\033[0m{status} — {spec.description}")
+                    print()
+                    continue
+                elif cmd == "/memory":
+                    from sudo.core.memory import load_memories, add_memory, delete_memory, clear_memories
+                    parts = cmd_arg.split(None, 1)
+                    sub = parts[0].lower() if parts else ""
+                    sub_val = parts[1].strip() if len(parts) > 1 else ""
+                    
+                    if sub == "add":
+                        if not sub_val:
+                            print("\033[31mError: Memory content cannot be empty.\033[0m\n")
+                            continue
+                        add_memory(sub_val)
+                        rebuild_system_instructions(messages, cfg)
+                        save_active_session_messages(active_session_id, messages)
+                        print("\033[32mPreference added to memory.\033[0m\n")
+                        continue
+                    elif sub in ("delete", "remove"):
+                        if not sub_val.isdigit():
+                            print("\033[31mError: Specify memory index (number) to delete.\033[0m\n")
+                            continue
+                        if delete_memory(int(sub_val)):
+                            rebuild_system_instructions(messages, cfg)
+                            save_active_session_messages(active_session_id, messages)
+                            print("\033[32mMemory deleted successfully.\033[0m\n")
+                        else:
+                            print("\033[31mError: Invalid memory index.\033[0m\n")
+                        continue
+                    elif sub == "clear":
+                        clear_memories()
+                        rebuild_system_instructions(messages, cfg)
+                        save_active_session_messages(active_session_id, messages)
+                        print("\033[32mAll memories cleared.\033[0m\n")
+                        continue
+                    
+                    memories = load_memories()
+                    print("\n\033[1mStored Preferences & Memories:\033[0m")
+                    if not memories:
+                        print("  (none)")
+                    else:
+                        for idx, mem in enumerate(memories, 1):
+                            print(f"  {idx:2d}. {mem}")
+                    print("\nUsage:")
+                    print("  /memory add <preference text>")
+                    print("  /memory delete <index>")
+                    print("  /memory clear")
+                    print()
+                    continue
+                elif cmd == "/cron":
+                    import subprocess
+                    import os
+                    print("\n\033[1mSystem Cron / Scheduled Tasks:\033[0m")
+                    if os.name == 'nt':
+                        try:
+                            res = subprocess.run("schtasks /query /fo TABLE", shell=True, capture_output=True, text=True, timeout=10)
+                            lines = (res.stdout or res.stderr).splitlines()
+                            for line in lines[:25]:
+                                print(line)
+                            if len(lines) > 25:
+                                print(f"  ... [truncated {len(lines)-25} lines]")
+                        except Exception as e:
+                            print(f"Failed to query schtasks: {e}")
+                    else:
+                        try:
+                            res = subprocess.run("crontab -l", shell=True, capture_output=True, text=True, timeout=10)
+                            print(res.stdout or res.stderr)
+                        except Exception as e:
+                            print(f"Failed to query crontab: {e}")
+                    print()
+                    continue
+                elif cmd == "/mcp-reload":
+                    from sudo.core.mcp import initialize_mcp_servers
+                    initialize_mcp_servers()
+                    print("\033[32mMCP servers reloaded.\033[0m\n")
+                    continue
+                elif cmd == "/skills-reload":
+                    from sudo.core.skills import load_skills
+                    load_skills()
+                    print("\033[32mSkills reloaded.\033[0m\n")
+                    continue
+                elif cmd == "/gcs-config":
+                    parts = cmd_arg.split(None, 1)
+                    sub = parts[0].lower() if parts else ""
+                    sub_val = parts[1].strip() if len(parts) > 1 else ""
+                    
+                    if sub == "bucket":
+                        cfg.gcs_bucket = sub_val
+                        save(cfg)
+                        print(f"\033[32mGCS bucket updated to: {sub_val}\033[0m\n")
+                        continue
+                    elif sub == "keyfile":
+                        cfg.gcs_key_file = sub_val
+                        save(cfg)
+                        print(f"\033[32mGCS key file updated to: {sub_val}\033[0m\n")
+                        continue
+                    
+                    print("\n\033[1mGoogle Cloud Storage (GCS) Config:\033[0m")
+                    print(f"  \033[1mGCS Bucket:\033[0m       {cfg.gcs_bucket or '(none)'}")
+                    print(f"  \033[1mGCS Key File:\033[0m     {cfg.gcs_key_file or '(none)'}")
+                    print("\nUsage:")
+                    print("  /gcs-config bucket <bucket_name>")
+                    print("  /gcs-config keyfile <path_to_service_account_key.json>")
+                    print()
+                    continue
                 else:
                     from sudo.core.skills import load_skills
                     skills = load_skills()
                     skill_name = cmd[1:]
                     if skill_name in skills:
+                        always_add = False
+                        always_remove = False
+                        if cmd_arg == "+=always" or cmd_arg.endswith("+=always"):
+                            always_add = True
+                            cmd_arg = cmd_arg.replace("+=always", "").strip()
+                        elif cmd_arg == "-=always" or cmd_arg.endswith("-=always"):
+                            always_remove = True
+                            cmd_arg = cmd_arg.replace("-=always", "").strip()
+                            
+                        if always_add:
+                            if skill_name not in cfg.always_on_skills:
+                                cfg.always_on_skills.append(skill_name)
+                                save(cfg)
+                            print(f"\033[32mSkill '{skill_name}' is now always active.\033[0m\n")
+                            rebuild_system_instructions(messages, cfg)
+                            save_active_session_messages(active_session_id, messages)
+                            continue
+                        elif always_remove:
+                            if skill_name in cfg.always_on_skills:
+                                cfg.always_on_skills.remove(skill_name)
+                                save(cfg)
+                            print(f"\033[32mSkill '{skill_name}' always-active mode disabled.\033[0m\n")
+                            rebuild_system_instructions(messages, cfg)
+                            save_active_session_messages(active_session_id, messages)
+                            continue
+                            
                         if not cmd_arg:
                             print(f"Usage: {cmd} <your prompt>\n")
                             continue
                         
                         skill = skills[skill_name]
                         print(f"\033[36mRunning skill \033[1m{skill_name}\033[0m: {skill['description']}...\033[0m")
-                        
-                        if messages and messages[0].get("role") == "system":
-                            messages[0]["content"] = skill["system_prompt"]
-                        else:
-                            messages.insert(0, {"role": "system", "content": skill["system_prompt"]})
-                            
+                        rebuild_system_instructions(messages, cfg, active_skill_prompt=skill["system_prompt"])
                         user_input = cmd_arg
                     else:
                         print(f"\033[31mUnknown command: {cmd}\033[0m\n")
@@ -1869,7 +2219,10 @@ def run_chat(args) -> int:
                             yield chunk
 
                     logged_stream = raw_logger(chat_stream(provider, messages, usage_stats=usage_stats))
-                    filtered_stream = stream_filter_think_tags(logged_stream)
+                    if cfg.show_reasoning:
+                        filtered_stream = logged_stream
+                    else:
+                        filtered_stream = stream_filter_think_tags(logged_stream)
 
                     visible_response = ""
                     for chunk in filtered_stream:
@@ -1936,4 +2289,5 @@ def run_chat(args) -> int:
             print("\nInterrupted.")
             continue
             
+    shutdown_mcp_servers()
     return 0

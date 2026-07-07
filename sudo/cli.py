@@ -36,6 +36,8 @@ Examples:
     parser.add_argument("--json", action="store_true", help="Output in JSON format")
     parser.add_argument("--quiet", "-q", action="store_true", help="Suppress non-essential output for scripting")
     parser.add_argument("--pipe", action="store_true", help="Read input from stdin (pipe mode)")
+    parser.add_argument("-c", "--continue", dest="continue_session", nargs="?", const="",
+                        help="Continue previous session by ID or name (most recent if empty)")
 
     subparsers = parser.add_subparsers(
         title="commands", dest="command", metavar="<command>",
@@ -91,6 +93,7 @@ def main(argv: list[str] | None = None) -> int:
             pipe_input=_pipe_input,
             quiet=args.quiet,
             json_output=args.json,
+            continue_session=args.continue_session,
         )
         return run_chat(mock_args)
 
