@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-
 from sudo.utils.output import terminal_width
 from sudo.utils.constants import IGNORED_DIRS
 
@@ -19,6 +18,7 @@ def register(subparsers) -> None:
 
 
 def _try_rg(args) -> int:
+    """Try ripgrep. Returns: 0=success, 1=rg not installed, 2=rg error."""
     try:
         subprocess.run(["rg", "--version"], capture_output=True, timeout=2)
     except (FileNotFoundError, subprocess.TimeoutExpired):
@@ -44,7 +44,12 @@ def _try_rg(args) -> int:
                 print(f"  [stderr] {result.stderr[:200]}", file=sys.stderr)
         else:
             print(f"No matches for '{args.pattern}'")
-        return 0
+        # Exit code 1 from rg = no matches (not an error)
+        if result.returncode == 1 and not output:
+            return 0  # No matches — success, not a fallback trigger
+        if result.returncode == 0 or (result.returncode == 1 and output):
+            return 0
+        return 2  # Actual error (exit 2, or exit 1 with no output and stderr)
     except subprocess.TimeoutExpired:
         print("Search timed out.")
         return 2
@@ -91,5 +96,9 @@ def _fallback_grep(args) -> None:
 
 
 def run_grep(args) -> None:
-    if _try_rg(args) == 1:
+    rg_result = _try_rg(args)
+    if rg_result == 1:
+        # rg not installed — fall back to grep
         _fallback_grep(args)
+    # rg_result 0 = success (no fallback needed)
+    # rg_result 2 = rg error already printed

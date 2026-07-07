@@ -259,3 +259,15 @@ class GCSClient:
                     break
                 h.update(chunk)
         return h.hexdigest()
+
+    def read_file_text(self, cloud_path: str) -> Optional[str]:
+        """Download and return the text content of a cloud file."""
+        if not self.is_online():
+            return None
+        blob = self._bucket.blob(cloud_path)
+        try:
+            return self._retry(blob.download_as_text)
+        except (NotFound, GCSOfflineError, GCSCredentialsError):
+            return None
+        except Exception:
+            return None

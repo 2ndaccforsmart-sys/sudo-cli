@@ -24,6 +24,7 @@ from typing import Any, Callable, Optional
 
 HOOKS: dict[str, list[Callable]] = {}
 PLUGIN_DIRS: list[Path] = []
+_LOADED_PLUGINS: set[str] = set()  # Track loaded plugin files to prevent double-load
 
 
 def register_hook(event: str, fn: Callable) -> None:
@@ -72,6 +73,12 @@ def discover_plugins(plugin_dirs: Optional[list[Path]] = None) -> None:
         for pyfile in sorted(d.glob("*.py")):
             if pyfile.stem.startswith("_"):
                 continue
+            # Skip already-loaded plugins (dedup)
+            file_key = str(pyfile.resolve())
+            if file_key in _LOADED_PLUGINS:
+                continue
+            _LOADED_PLUGINS.add(file_key)
+
             mod_name = f"sudoplugin_{pyfile.stem}"
             spec = importlib.util.spec_from_file_location(mod_name, pyfile)
             if spec and spec.loader:

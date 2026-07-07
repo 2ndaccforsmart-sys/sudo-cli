@@ -422,12 +422,7 @@ class SyncEngine:
     def _read_cloud_file(self, snap: FileSnapshot, target: SyncTarget) -> Optional[str]:
         """Read cloud file content for diff display."""
         cloud_path = f"{target.cloud_prefix}/{snap.relative_path}"
-        blob = self.gcs._bucket.blob(cloud_path)
-        try:
-            content = blob.download_as_text()
-            return content
-        except Exception:
-            return None
+        return self.gcs.read_file_text(cloud_path)
 
     def _run_git_backup(self, target: SyncTarget, quiet: bool = False) -> dict:
         """Run Git backup for a target."""

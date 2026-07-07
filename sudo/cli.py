@@ -61,29 +61,6 @@ def _register_commands(subparsers) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    # Ensure 'cli' shortcut command is created in the same prefix path as sudo-cli
-    try:
-        import shutil
-        import os
-        for target_name in ["sudo-cli", "sudo"]:
-            exec_path = shutil.which(target_name)
-            if exec_path:
-                bin_dir = os.path.dirname(exec_path)
-                cli_path = os.path.join(bin_dir, "cli")
-                if not os.path.exists(cli_path):
-                    try:
-                        if hasattr(os, "symlink"):
-                            os.symlink(target_name, cli_path)
-                        else:
-                            shutil.copy2(exec_path, cli_path)
-                    except Exception as e:
-                        print(f"\033[33m⚠️  Unable to automatically create 'cli' shortcut in {bin_dir}: {e}\033[0m")
-                        print(f"\033[33m   To enable it manually, please run:\033[0m")
-                        print(f"   \033[1mln -s {exec_path} {cli_path}\033[0m\n")
-                    break
-    except Exception:
-        pass
-
     if sys.platform.startswith("win"):
         try:
             sys.stdout.reconfigure(encoding='utf-8')

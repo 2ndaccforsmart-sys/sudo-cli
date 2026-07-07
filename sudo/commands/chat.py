@@ -9,10 +9,13 @@ import re
 import json
 import base64
 import mimetypes
-import tty
-import termios
 from pathlib import Path
 from typing import Generator, Any, Optional
+
+_IS_UNIX = not sys.platform.startswith("win")
+if _IS_UNIX:
+    import tty
+    import termios
 
 from sudo.core.config import load, save
 from sudo.core.provider import PROVIDER_REGISTRY, ProviderFactory, BaseProvider, TIER_LABELS, TIER_ORDER
@@ -82,10 +85,15 @@ def extract_content(response: dict, api_type: str) -> str:
 
 
 def load_multimodal_file(path: str) -> dict[str, str] | None:
-    """Loads and base64-encodes an image or video file."""
+    """Loads and base64-encodes an image or video file. Max 20MB."""
+    MAX_FILE_SIZE = 20 * 1024 * 1024  # 20MB
     try:
         path = path.strip().strip('"').strip("'")
         if not os.path.exists(path):
+            return None
+        file_size = os.path.getsize(path)
+        if file_size > MAX_FILE_SIZE:
+            print(f"\033[31mError: File too large ({file_size / 1024 / 1024:.1f}MB, max 20MB).\033[0m")
             return None
         mime_type, _ = mimetypes.guess_type(path)
         if not mime_type:
@@ -123,7 +131,7 @@ def trim_context(messages: list[dict], model: str, reserved_ratio: float = 0.85)
     ctx_limit = get_context_limit(model)
     target_max = int(ctx_limit * reserved_ratio)
 
-    total_chars = sum(len(m.get("content", "")) for m in messages)
+    total_chars = sum(len(m.get("content", "")) for m in messages if m.get("role") != "system")
     if total_chars // 4 <= target_max:
         return messages
 
@@ -338,7 +346,7 @@ def chat_stream(provider: BaseProvider, messages: list[dict], usage_stats: dict[
             
     # Standard fallback token estimation if provider returns 0 tokens
     if usage_stats.get("prompt_tokens", 0) == 0:
-        total_chars = sum(len(m["content"]) for m in messages)
+        total_chars = sum(len(m["content"]) for m in messages if m.get("role") != "system")
         usage_stats["prompt_tokens"] = total_chars // 4
     if usage_stats.get("completion_tokens", 0) == 0:
         usage_stats["completion_tokens"] = len(full_response) // 4
@@ -380,7 +388,7 @@ def print_status_bar(model: str, messages: list[dict], last_response_time: float
         sys.stdout.flush()
     _status_bar_printed = True
 
-    total_chars = sum(len(m["content"]) for m in messages)
+    total_chars = sum(len(m["content"]) for m in messages if m.get("role") != "system")
     tokens = total_chars // 4
 
     # Truncate model name to save visual space for the progress bar
@@ -388,8 +396,7 @@ def print_status_bar(model: str, messages: list[dict], last_response_time: float
     if len(display_model) > 16:
         display_model = display_model[:13] + "..."
     # Sanitize: only allow safe characters
-    import re as _re
-    display_model = _re.sub(r"[^\w\-./:]+", "_", display_model)
+    display_model = re.sub(r"[^\w\-./:]+", "_", display_model)
 
     ctx_limit = get_context_limit(model)
 
@@ -1358,18 +1365,19 @@ def run_chat(args) -> int:
                 elif cmd == "/retry":
                     # Remove last assistant message and retry
                     if len(messages) > 1 and messages[-1].get("role") == "assistant":
-                        removed = messages.pop()
+                        messages.pop()
                         print(f"\033[33mRemoved last assistant response. Retrying...\033[0m")
-                        # Re-process the last user message
-                        user_input = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
-                        if user_input:
-                            continue  # Re-enter the main loop to re-prompt
+                        # Find the last user message to re-send
+                        retry_msg = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+                        if retry_msg:
+                            user_input = retry_msg
+                            # Fall through to LLM processing below
                         else:
                             print("\033[31mNo user message to retry.\033[0m\n")
                             continue
                     else:
                         print("\033[31mNo assistant response to retry.\033[0m\n")
-                    continue
+                        continue
                 elif cmd == "/undo":
                     n = 1
                     if cmd_arg and cmd_arg.isdigit():

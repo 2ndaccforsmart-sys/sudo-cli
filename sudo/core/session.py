@@ -14,8 +14,18 @@ from typing import Any, Optional
 from sudo.core.config import STATE_DIR_BASE
 
 
+# Cache project hash to avoid repeated subprocess calls
+_PROJECT_HASH_CACHE: dict[Optional[str], str] = {}
+
+
 def _project_hash(path: Optional[str] = None) -> str:
-    """Compute a short hash for project identity (git remote URL or cwd)."""
+    """Compute a short hash for project identity (git remote URL or cwd).
+    
+    Results are cached per path to avoid repeated subprocess calls.
+    """
+    if path in _PROJECT_HASH_CACHE:
+        return _PROJECT_HASH_CACHE[path]
+
     target = path or os.getcwd()
     try:
         import subprocess
@@ -37,7 +47,10 @@ def _project_hash(path: Optional[str] = None) -> str:
             identifier = os.path.abspath(target)
     except Exception:
         identifier = os.path.abspath(target)
-    return hashlib.sha256(identifier.encode()).hexdigest()[:16]
+    
+    h = hashlib.sha256(identifier.encode()).hexdigest()[:16]
+    _PROJECT_HASH_CACHE[path] = h
+    return h
 
 
 def _state_dir(path: Optional[str] = None) -> Path:
@@ -54,6 +67,7 @@ class SessionManager:
         self.state_dir = _state_dir(path)
         self.session_file = self.state_dir / "session.json"
         self._data: dict[str, Any] = {}
+        self._dirty: bool = False  # Track if unsaved changes exist
 
     def load(self) -> dict[str, Any]:
         try:
@@ -62,6 +76,7 @@ class SessionManager:
                     self._data = json.load(f)
         except (json.JSONDecodeError, OSError):
             self._data = {}
+        self._dirty = False
         return self._data
 
     def save(self, data: Optional[dict[str, Any]] = None) -> None:
@@ -70,6 +85,16 @@ class SessionManager:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         with open(self.session_file, "w") as f:
             json.dump(self._data, f, indent=2)
+        self._dirty = False
+
+    def mark_dirty(self) -> None:
+        """Mark that data has changed and needs saving."""
+        self._dirty = True
+
+    def flush(self) -> None:
+        """Save only if there are pending changes."""
+        if self._dirty:
+            self.save()
 
     @property
     def plan(self) -> Optional[str]:
@@ -78,7 +103,7 @@ class SessionManager:
     @plan.setter
     def plan(self, value: Optional[str]) -> None:
         self._data["plan"] = value
-        self.save()
+        self.mark_dirty()
 
     @property
     def last_command(self) -> Optional[str]:
@@ -87,7 +112,7 @@ class SessionManager:
     @last_command.setter
     def last_command(self, value: Optional[str]) -> None:
         self._data["last_command"] = value
-        self.save()
+        self.mark_dirty()
 
     @property
     def conversation_summary(self) -> Optional[str]:
@@ -96,7 +121,7 @@ class SessionManager:
     @conversation_summary.setter
     def conversation_summary(self, value: Optional[str]) -> None:
         self._data["conversation_summary"] = value
-        self.save()
+        self.mark_dirty()
 
     @property
     def undo_stack(self) -> list[dict]:
@@ -105,7 +130,7 @@ class SessionManager:
     @undo_stack.setter
     def undo_stack(self, value: list[dict]) -> None:
         self._data["undo_stack"] = value
-        self.save()
+        self.mark_dirty()
 
     @property
     def memory(self) -> dict[str, Any]:
@@ -114,7 +139,7 @@ class SessionManager:
     @memory.setter
     def memory(self, value: dict[str, Any]) -> None:
         self._data["memory"] = value
-        self.save()
+        self.mark_dirty()
 
     def clear(self) -> None:
         self._data = {}

@@ -22,47 +22,6 @@ def terminal_width() -> int:
         return 70
 
 
-def print_table(headers: list[str], rows: list[list[str]], max_width: int = 70) -> None:
-    """Print a compact table with auto-column sizing."""
-    if not rows:
-        print("(no data)")
-        return
-
-    tw = terminal_width()
-    max_width = min(max_width, tw)
-    ncols = len(headers)
-    if ncols == 0:
-        return
-
-    col_widths = []
-    for i, h in enumerate(headers):
-        max_cell = max(len(str(r[i])) if i < len(r) else 0 for r in rows) if rows else 0
-        col_widths.append(max(len(h), max_cell))
-
-    total = sum(col_widths) + 3 * (ncols - 1) + 2
-    if total > max_width and ncols > 0:
-        overflow = total - max_width
-        for i in range(ncols):
-            if overflow <= 0:
-                break
-            shrink = max(0, min(col_widths[i] - 5, overflow // (ncols - i)))
-            if shrink > 0:
-                col_widths[i] -= shrink
-                overflow -= shrink
-
-    def _render(cells):
-        parts = []
-        for i, c in enumerate(cells):
-            w = col_widths[i] if i < len(col_widths) else 10
-            parts.append(str(c)[:w].ljust(w))
-        return " " + "  ".join(parts)
-
-    print(_render(headers))
-    print("-" * min(len(_render(headers)), max_width))
-    for row in rows:
-        print(_render(row[:ncols]))
-
-
 def page(text: str) -> None:
     """Pipe text through $PAGER if output exceeds terminal height."""
     if not text:
@@ -75,15 +34,18 @@ def page(text: str) -> None:
     pager = os.environ.get("PAGER")
     if not pager:
         pager = "more" if sys.platform == "win32" else "less"
+    p = None
     try:
         shell_flag = sys.platform != "win32" and " " not in pager
         p = subprocess.Popen(pager, stdin=subprocess.PIPE, shell=shell_flag)
         p.communicate(text.encode(), timeout=30)
     except (FileNotFoundError, OSError, subprocess.TimeoutExpired, BrokenPipeError):
-        try:
-            p.kill()
-        except Exception:
-            pass
+        if p is not None:
+            try:
+                p.kill()
+                p.wait()
+            except Exception:
+                pass
         print(text)
 
 

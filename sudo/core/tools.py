@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-
 @dataclass
 class ToolSpec:
     """Specification for a single tool with JSON schema."""
@@ -27,7 +26,6 @@ class ToolSpec:
 
 
 TOOL_REGISTRY: dict[str, ToolSpec] = {}
-
 
 def _param(t: str, desc: str, **kw) -> dict[str, Any]:
     return {"type": t, "description": desc, **kw}
@@ -68,7 +66,7 @@ def get_system_prompt_tools() -> str:
     return "\n".join(lines)
 
 
-# ── Tool Handlers ────────────────────────────────────────────────────────────
+# ── Tool Handlers ────────────────────────────────────────────────────────
 
 def _handle_read_file(path: str) -> str:
     abs_path = os.path.abspath(path)
@@ -108,10 +106,30 @@ def _handle_delete_file(path: str) -> str:
         return f"[Tool Error deleting path: {e}]"
 
 
+# Extended dangerous command patterns — covers common destructive patterns
 DANGEROUS_CMD_PATTERNS = (
-    "rm -rf", "rm -fr", "rmdir", "del /s", "del /q",
-    "mkfs", "format", "fdisk", "> /dev/", "dd if=",
-    "chmod -R 777", "chown -R", ":(){ :|:& };:",
+    # Recursive delete
+    "rm -rf", "rm -fr", "rm -r ", "rm -f ",
+    "rmdir", "rd /s",
+    # Windows delete
+    "del /s", "del /q",
+    # Filesystem destruction
+    "mkfs", "format", "fdisk", "parted",
+    # Device overwrite
+    "> /dev/", "dd if=",
+    # Permission escalation
+    "chmod -R 777", "chmod -R 000", "chown -R",
+    # Fork bomb
+    ":(){ :|:& };:",
+    # Package manager destruction
+    "apt remove --purge", "apt autoremove --purge",
+    "yum remove", "dnf remove",
+    # Variable expansion tricks
+    "$(", "`",
+    # Piping to shell
+    "| sh", "| bash", "| zsh",
+    # Stdin overwrite
+    "mv /etc/", "mv /*",
 )
 
 
@@ -152,7 +170,7 @@ def _handle_list_dir(path: str) -> str:
     return "[Tool Error: list_dir is disabled by user security policy]"
 
 
-# ── Register Tools ───────────────────────────────────────────────────────────
+# ── Register Tools ───────────────────────────────────────────────────────
 
 register_tool(ToolSpec(
     name="read_file",

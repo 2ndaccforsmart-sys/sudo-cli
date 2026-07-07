@@ -439,7 +439,9 @@ _reg(ProviderDef("iflytek/spark", "iFlytek Spark", "openai",
     "spark-3.5", "Z", notes="iFlytek Spark, strong Chinese speech & NLP"))
 
 
-assert len(PROVIDER_REGISTRY) >= 60, f"Only {len(PROVIDER_REGISTRY)} providers"
+# Validate provider count — always runs, even with -O flag
+if len(PROVIDER_REGISTRY) < 60:
+    raise RuntimeError(f"Provider registry has only {len(PROVIDER_REGISTRY)} providers, expected >= 60")
 
 
 # ── Base Provider ────────────────────────────────────────────────────────────
