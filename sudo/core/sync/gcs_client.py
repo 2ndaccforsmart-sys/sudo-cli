@@ -18,11 +18,16 @@ try:
         GoogleAPIError,
         NotFound,
         Forbidden,
-        NetworkError,
     )
+    try:
+        from google.api_core.exceptions import NetworkError
+    except ImportError:
+        # Older/newer versions use RetryError for transient network issues
+        from google.api_core.exceptions import RetryError as NetworkError
     GCS_AVAILABLE = True
 except ImportError:
     GCS_AVAILABLE = False
+
 
 
 class GCSOfflineError(Exception):

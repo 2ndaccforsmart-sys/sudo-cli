@@ -69,20 +69,40 @@ def get_system_prompt_tools() -> str:
 # ── Tool Handlers ────────────────────────────────────────────────────────
 
 def _get_gcs_client():
-    from sudo.core.sync.registry import SyncRegistry
+    """Resolve GCS bucket + credentials.
+
+    Priority:
+      1. Central sudo-config.json (cfg.gcs_bucket / cfg.gcs_key_file)
+      2. SyncRegistry settings (legacy separate config)
+      3. Environment variables GCS_BUCKET / GOOGLE_APPLICATION_CREDENTIALS
+    """
     from sudo.core.sync.gcs_client import GCSClient
-    
-    registry = SyncRegistry()
-    registry.load()
-    settings = registry.get_settings()
-    
-    bucket = settings.gcs_bucket or os.environ.get("GCS_BUCKET")
-    creds = settings.gcs_credentials_path or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-    
+    from sudo.core.config import load as _load_cfg
+
+    # 1. Central config
+    cfg = _load_cfg()
+    bucket = cfg.gcs_bucket
+    creds = cfg.gcs_key_file
+
+    # 2. SyncRegistry fallback
+    if not bucket:
+        try:
+            from sudo.core.sync.registry import SyncRegistry
+            registry = SyncRegistry()
+            registry.load()
+            settings = registry.get_settings()
+            bucket = settings.gcs_bucket
+            creds = creds or settings.gcs_credentials_path
+        except Exception:
+            pass
+
+    # 3. Env vars fallback
+    bucket = bucket or os.environ.get("GCS_BUCKET")
+    creds = creds or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+
     if not bucket:
         raise ValueError(
-            "GCS is not configured. Please set the GCS bucket name in sync settings "
-            "or GCS_BUCKET environment variable."
+            "GCS bucket not configured. Run: /gcs-config bucket <your-bucket-name>"
         )
     return GCSClient(bucket, creds)
 
