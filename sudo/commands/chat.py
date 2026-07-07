@@ -1454,8 +1454,65 @@ def _pick_model_interactive(models: list[dict], current_model: str) -> str | Non
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
+def sync_gcs_at_startup(cfg: Config) -> None:
+    if not cfg.gcs_bucket:
+        return
+    try:
+        from sudo.core.tools import _get_gcs_client
+        client = _get_gcs_client()
+        
+        from sudo.core.skills import SKILLS_FILE
+        if SKILLS_FILE.exists():
+            cloud_skills_text = client.read_file_text("skills.json")
+            if cloud_skills_text:
+                import json
+                try:
+                    cloud_skills = json.loads(cloud_skills_text)
+                    local_skills = json.loads(SKILLS_FILE.read_text(encoding="utf-8"))
+                    merged = {**cloud_skills, **local_skills}
+                    SKILLS_FILE.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+                    blob = client._bucket.blob("skills.json")
+                    client._retry(blob.upload_from_string, json.dumps(merged, indent=2))
+                except Exception:
+                    pass
+            else:
+                blob = client._bucket.blob("skills.json")
+                client._retry(blob.upload_from_string, SKILLS_FILE.read_text(encoding="utf-8"))
+        else:
+            cloud_skills_text = client.read_file_text("skills.json")
+            if cloud_skills_text:
+                SKILLS_FILE.parent.mkdir(parents=True, exist_ok=True)
+                SKILLS_FILE.write_text(cloud_skills_text, encoding="utf-8")
+                
+        from sudo.core.memory import MEMORY_FILE
+        if MEMORY_FILE.exists():
+            cloud_mem_text = client.read_file_text("memory.json")
+            if cloud_mem_text:
+                import json
+                try:
+                    cloud_mem = json.loads(cloud_mem_text)
+                    local_mem = json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
+                    merged = list(set(cloud_mem + local_mem))
+                    MEMORY_FILE.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+                    blob = client._bucket.blob("memory.json")
+                    client._retry(blob.upload_from_string, json.dumps(merged, indent=2))
+                except Exception:
+                    pass
+            else:
+                blob = client._bucket.blob("memory.json")
+                client._retry(blob.upload_from_string, MEMORY_FILE.read_text(encoding="utf-8"))
+        else:
+            cloud_mem_text = client.read_file_text("memory.json")
+            if cloud_mem_text:
+                MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+                MEMORY_FILE.write_text(cloud_mem_text, encoding="utf-8")
+    except Exception:
+        pass
+
+
 def rebuild_system_instructions(messages: list[dict], cfg: Config, active_skill_prompt: Optional[str] = None) -> None:
     prompt = SYSTEM_PROMPT
+    prompt += "\n\nPersistent Memory Instructions:\nWhenever you learn a new user preference, style detail, technical rule, or key lesson from this conversation, output it wrapped in `<memory>...</memory>` tags (e.g. `<memory>User prefers snake_case for test names</memory>`). These will be saved automatically to improve your work over time."
     if cfg.personality:
         prompt += f"\n\nPersonality / Custom Instructions:\n{cfg.personality}"
     from sudo.core.memory import load_memories
@@ -1497,6 +1554,10 @@ def run_chat(args) -> int:
         return 1
 
     cfg = load()
+    if cfg.gcs_bucket:
+        if not quiet:
+            print("\033[36mSyncing skills and memories with GCS...\033[0m")
+        sync_gcs_at_startup(cfg)
     try:
         pc = cfg.get_provider_config()
         provider = ProviderFactory.create(pc.name, api_key=pc.api_key, model=pc.model, base_url=pc.base_url)
@@ -2459,6 +2520,13 @@ def run_chat(args) -> int:
                     continue
                 else:
                     if current_response.strip():
+                        memories_found = re.findall(r'<memory>(.*?)</memory>', current_response, re.DOTALL)
+                        if memories_found:
+                            from sudo.core.memory import add_memory
+                            for mem in memories_found:
+                                add_memory(mem.strip())
+                            current_response = re.sub(r'<memory>.*?</memory>', '', current_response, flags=re.DOTALL).strip()
+                            
                         messages.append({"role": "assistant", "content": current_response})
                         save_active_session_messages(active_session_id, messages)
                         print("\n\033[32m✧٩(ˊᗜˋ*)و✧ got it!\033[0m")
