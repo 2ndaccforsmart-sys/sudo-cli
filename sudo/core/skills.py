@@ -30,28 +30,22 @@ DEFAULT_SKILLS = {
 }
 
 
+from sudo.core.config import load, save
+
 def load_skills() -> dict[str, dict]:
-    """Load skills from skills.json, fallback to defaults."""
-    if not SKILLS_FILE.exists():
-        SKILLS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        save_skills(DEFAULT_SKILLS)
-        return dict(DEFAULT_SKILLS)
-    try:
-        data = json.loads(SKILLS_FILE.read_text(encoding="utf-8"))
-        merged = dict(DEFAULT_SKILLS)
-        merged.update(data)
-        return merged
-    except Exception:
-        return dict(DEFAULT_SKILLS)
+    """Load skills from config, fallback to defaults."""
+    cfg = load()
+    merged = dict(DEFAULT_SKILLS)
+    merged.update(cfg.skills)
+    return merged
 
 
 def save_skills(skills: dict[str, dict]) -> None:
-    """Save skills to skills.json."""
-    try:
-        SKILLS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        SKILLS_FILE.write_text(json.dumps(skills, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+    """Save custom skills to config."""
+    custom_skills = {k: v for k, v in skills.items() if k not in DEFAULT_SKILLS}
+    cfg = load()
+    cfg.skills = custom_skills
+    save(cfg)
 
 
 def add_skill(name: str, description: str, system_prompt: str) -> None:

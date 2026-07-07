@@ -86,18 +86,15 @@ def test_get_provider_config_no_provider():
 
 
 def test_save_and_reload(monkeypatch, tmp_path):
-    config_dir = tmp_path / ".config" / "sudo"
-    monkeypatch.setattr("sudo.core.config.CONFIG_DIR", config_dir)
-    monkeypatch.setattr("sudo.core.config.CONFIG_YAML", config_dir / "config.yaml")
-    monkeypatch.setattr("sudo.core.config.CONFIG_JSON", config_dir / "config.json")
+    config_file = tmp_path / "sudo-config.json"
+    monkeypatch.setattr("sudo.core.config.CONFIG_FILE", config_file)
 
     cfg = Config(provider="groq", api_key="sk-test", model="llama-3.3-70b")
     save(cfg)
 
-    # Should have created YAML
-    yaml_path = config_dir / "config.yaml"
-    assert yaml_path.exists()
-    content = yaml_path.read_text()
+    # Should have created JSON file
+    assert config_file.exists()
+    content = config_file.read_text()
     assert "groq" in content
 
 

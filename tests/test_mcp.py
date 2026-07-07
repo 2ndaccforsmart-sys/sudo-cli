@@ -14,8 +14,8 @@ from sudo.core.mcp import (
 from sudo.core.tools import TOOL_REGISTRY
 
 def test_mcp_config_fallback(tmp_path):
-    test_file = tmp_path / "mcp.json"
-    with patch("sudo.core.mcp.MCP_CONFIG_FILE", test_file):
+    test_file = tmp_path / "sudo-config.json"
+    with patch("sudo.core.config.CONFIG_FILE", test_file):
         config = load_mcp_config()
         assert config == {"mcpServers": {}}
         assert test_file.exists()
@@ -23,9 +23,9 @@ def test_mcp_config_fallback(tmp_path):
 
 @patch("subprocess.Popen")
 def test_initialize_and_shutdown_mcp_servers(mock_popen, tmp_path):
-    test_file = tmp_path / "mcp.json"
+    test_file = tmp_path / "sudo-config.json"
     config_data = {
-        "mcpServers": {
+        "mcp_servers": {
             "test-server": {
                 "command": "python",
                 "args": ["-m", "http.server"]
@@ -47,7 +47,7 @@ def test_initialize_and_shutdown_mcp_servers(mock_popen, tmp_path):
     ]
     mock_popen.return_value = mock_proc
     
-    with patch("sudo.core.mcp.MCP_CONFIG_FILE", test_file):
+    with patch("sudo.core.config.CONFIG_FILE", test_file):
         initialize_mcp_servers()
         assert "test-server" in ACTIVE_SERVERS
         assert "mcp_tool" in TOOL_REGISTRY

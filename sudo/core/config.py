@@ -16,10 +16,8 @@ try:
 except ImportError:
     yaml = None
 
-CONFIG_DIR = Path.home() / ".config" / "sudo"
-CONFIG_YAML = CONFIG_DIR / "config.yaml"
-CONFIG_JSON = CONFIG_DIR / "config.json"
-STATE_DIR_BASE = CONFIG_DIR / "state"
+CONFIG_FILE = Path.home() / "sudo-config.json"
+STATE_DIR_BASE = Path.home() / ".config" / "sudo" / "state"
 
 
 @dataclass
@@ -50,6 +48,8 @@ class Config:
     telegram_token: Optional[str] = None
     telegram_chat_id: Optional[str] = None
     telegram_enabled: bool = False
+    skills: dict = field(default_factory=dict)
+    memories: list[str] = field(default_factory=list)
 
     def get_provider_config(self, name: Optional[str] = None) -> ProviderConfig:
         """Resolve provider config, consulting env vars for API keys.
@@ -95,25 +95,92 @@ def _resolve_key(api_key: Optional[str], env_key: Optional[str]) -> Optional[str
     return None
 
 
+def migrate_old_config():
+    old_dir = Path.home() / ".config" / "sudo"
+    if CONFIG_FILE.exists():
+        return
+        
+    if old_dir.exists():
+        import json
+        
+        data = {
+            "provider": None,
+            "api_key": None,
+            "model": None,
+            "base_url": None,
+            "extra_providers": [],
+            "personality": None,
+            "always_on_skills": [],
+            "show_reasoning": False,
+            "yolo_mode": False,
+            "gcs_bucket": None,
+            "gcs_key_file": None,
+            "telegram_token": None,
+            "telegram_chat_id": None,
+            "telegram_enabled": False,
+            "mcp_servers": {},
+            "skills": {},
+            "memories": []
+        }
+        
+        old_yaml = old_dir / "config.yaml"
+        old_json = old_dir / "config.json"
+        
+        if old_yaml.exists():
+            try:
+                if yaml is not None:
+                    raw = yaml.safe_load(old_yaml.read_text()) or {}
+                    for k, v in raw.items():
+                        if k in data:
+                            data[k] = v
+            except Exception:
+                pass
+        elif old_json.exists():
+            try:
+                raw = json.loads(old_json.read_text())
+                for k, v in raw.items():
+                    if k in data:
+                        data[k] = v
+            except Exception:
+                pass
+                
+        old_mcp = old_dir / "mcp.json"
+        if old_mcp.exists():
+            try:
+                raw = json.loads(old_mcp.read_text())
+                data["mcp_servers"] = raw.get("mcpServers", {})
+            except Exception:
+                pass
+                
+        old_skills = old_dir / "skills.json"
+        if old_skills.exists():
+            try:
+                raw = json.loads(old_skills.read_text())
+                data["skills"] = raw
+            except Exception:
+                pass
+                
+        old_mem = old_dir / "memory.json"
+        if old_mem.exists():
+            try:
+                raw = json.loads(old_mem.read_text())
+                data["memories"] = raw
+            except Exception:
+                pass
+                
+        CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
 def load() -> Config:
-    """Load config from YAML (preferred) or JSON."""
-    if CONFIG_YAML.exists():
-        return _load_yaml(CONFIG_YAML)
-    if CONFIG_JSON.exists():
-        return _load_json(CONFIG_JSON)
-    return Config()
-
-
-def _load_yaml(path: Path) -> Config:
-    if yaml is None:
-        raise ImportError("PyYAML is required. Run: pip install pyyaml")
-    raw = yaml.safe_load(path.read_text()) or {}
-    return _parse(raw)
-
-
-def _load_json(path: Path) -> Config:
-    raw = json.loads(path.read_text())
-    return _parse(raw)
+    """Load config from ~/sudo-config.json, with backward-compatible migration."""
+    migrate_old_config()
+    if not CONFIG_FILE.exists():
+        return Config()
+    try:
+        raw = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        return _parse(raw)
+    except Exception:
+        return Config()
 
 
 def _parse(raw: dict) -> Config:
@@ -133,12 +200,13 @@ def _parse(raw: dict) -> Config:
         telegram_token=raw.get("telegram_token"),
         telegram_chat_id=raw.get("telegram_chat_id"),
         telegram_enabled=raw.get("telegram_enabled", False),
+        skills=raw.get("skills", {}),
+        memories=raw.get("memories", []),
     )
 
 
 def save(cfg: Config) -> None:
-    """Persist config as YAML."""
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    """Persist config to ~/sudo-config.json."""
     data = {
         "provider": cfg.provider,
         "api_key": cfg.api_key,
@@ -155,8 +223,7 @@ def save(cfg: Config) -> None:
         "telegram_token": cfg.telegram_token,
         "telegram_chat_id": cfg.telegram_chat_id,
         "telegram_enabled": cfg.telegram_enabled,
+        "skills": cfg.skills,
+        "memories": cfg.memories,
     }
-    if yaml is not None:
-        CONFIG_YAML.write_text(yaml.safe_dump(data, default_flow_style=False, sort_keys=False))
-    else:
-        CONFIG_JSON.write_text(json.dumps(data, indent=2))
+    CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")

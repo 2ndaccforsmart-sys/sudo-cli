@@ -13,8 +13,8 @@ from sudo.core.skills import (
 )
 
 def test_load_skills_default(tmp_path):
-    test_file = tmp_path / "skills.json"
-    with patch("sudo.core.skills.SKILLS_FILE", test_file):
+    test_file = tmp_path / "sudo-config.json"
+    with patch("sudo.core.config.CONFIG_FILE", test_file):
         skills = load_skills()
         assert "goal" in skills
         assert "schedule" in skills
@@ -23,22 +23,18 @@ def test_load_skills_default(tmp_path):
 
 
 def test_add_delete_skill(tmp_path):
-    test_file = tmp_path / "skills.json"
-    with patch("sudo.core.skills.SKILLS_FILE", test_file):
-        # Add custom skill
+    test_file = tmp_path / "sudo-config.json"
+    with patch("sudo.core.config.CONFIG_FILE", test_file):
         add_skill("refactor", "Refactor code", "You are a refactoring assistant.")
         skills = load_skills()
         assert "refactor" in skills
         assert skills["refactor"]["description"] == "Refactor code"
         
-        # Get skill
         skill = get_skill("refactor")
         assert skill is not None
         assert skill["system_prompt"] == "You are a refactoring assistant."
         
-        # Try deleting default skill (should fail)
         assert delete_skill("goal") is False
         
-        # Delete custom skill
         assert delete_skill("refactor") is True
         assert "refactor" not in load_skills()

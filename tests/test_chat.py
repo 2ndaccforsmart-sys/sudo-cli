@@ -221,31 +221,23 @@ class TestGcsStartupSync:
     @patch("sudo.core.tools._get_gcs_client")
     def test_sync_gcs_at_startup(self, mock_get_client, tmp_path):
         from sudo.commands.chat import sync_gcs_at_startup
-        from sudo.core.skills import SKILLS_FILE
-        from sudo.core.memory import MEMORY_FILE
         
-        test_skills = tmp_path / "skills.json"
-        test_mem = tmp_path / "memory.json"
+        test_config = tmp_path / "sudo-config.json"
         
         mock_client = MagicMock()
         mock_client.read_file_text.side_effect = [
-            '{"skill1": {"description": "desc", "system_prompt": "prompt"}}',
-            '["pref1"]'
+            '{"skills": {"skill1": {"description": "desc", "system_prompt": "prompt"}}, "memories": ["pref1"]}'
         ]
         mock_get_client.return_value = mock_client
         
         from sudo.core.config import Config
         cfg = Config(gcs_bucket="my-bucket")
-        with patch("sudo.core.skills.SKILLS_FILE", test_skills), patch("sudo.core.memory.MEMORY_FILE", test_mem):
+        with patch("sudo.core.config.CONFIG_FILE", test_config):
             sync_gcs_at_startup(cfg)
             
-            assert test_skills.exists()
-            assert test_mem.exists()
-            
+            assert test_config.exists()
             import json
-            skills = json.loads(test_skills.read_text())
-            assert "skill1" in skills
-            
-            mems = json.loads(test_mem.read_text())
-            assert "pref1" in mems
+            data = json.loads(test_config.read_text())
+            assert "skill1" in data.get("skills", {})
+            assert "pref1" in data.get("memories", [])
 

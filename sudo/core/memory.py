@@ -5,22 +5,18 @@ from pathlib import Path
 
 MEMORY_FILE = Path.home() / ".config" / "sudo" / "memory.json"
 
+from sudo.core.config import load, save
+
 def load_memories() -> list[str]:
-    """Load memories from memory.json."""
-    if not MEMORY_FILE.exists():
-        return []
-    try:
-        return json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return []
+    """Load memories from config."""
+    cfg = load()
+    return cfg.memories
 
 def save_memories(memories: list[str]) -> None:
-    """Save memories to memory.json."""
-    try:
-        MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        MEMORY_FILE.write_text(json.dumps(memories, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+    """Save memories to config."""
+    cfg = load()
+    cfg.memories = memories
+    save(cfg)
 
 def add_memory(text: str) -> None:
     """Add a new memory."""

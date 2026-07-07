@@ -1459,53 +1459,27 @@ def sync_gcs_at_startup(cfg: Config) -> None:
         return
     try:
         from sudo.core.tools import _get_gcs_client
+        from sudo.core.config import CONFIG_FILE, save
         client = _get_gcs_client()
         
-        from sudo.core.skills import SKILLS_FILE
-        if SKILLS_FILE.exists():
-            cloud_skills_text = client.read_file_text("skills.json")
-            if cloud_skills_text:
-                import json
-                try:
-                    cloud_skills = json.loads(cloud_skills_text)
-                    local_skills = json.loads(SKILLS_FILE.read_text(encoding="utf-8"))
-                    merged = {**cloud_skills, **local_skills}
-                    SKILLS_FILE.write_text(json.dumps(merged, indent=2), encoding="utf-8")
-                    blob = client._bucket.blob("skills.json")
-                    client._retry(blob.upload_from_string, json.dumps(merged, indent=2))
-                except Exception:
-                    pass
-            else:
-                blob = client._bucket.blob("skills.json")
-                client._retry(blob.upload_from_string, SKILLS_FILE.read_text(encoding="utf-8"))
-        else:
-            cloud_skills_text = client.read_file_text("skills.json")
-            if cloud_skills_text:
-                SKILLS_FILE.parent.mkdir(parents=True, exist_ok=True)
-                SKILLS_FILE.write_text(cloud_skills_text, encoding="utf-8")
+        cloud_config_text = client.read_file_text("sudo-config.json")
+        if cloud_config_text:
+            import json
+            try:
+                cloud_data = json.loads(cloud_config_text)
+                cfg.mcp_servers.update(cloud_data.get("mcp_servers", {}))
+                cfg.skills.update(cloud_data.get("skills", {}))
+                cfg.memories = list(set(cfg.memories + cloud_data.get("memories", [])))
+                save(cfg)
                 
-        from sudo.core.memory import MEMORY_FILE
-        if MEMORY_FILE.exists():
-            cloud_mem_text = client.read_file_text("memory.json")
-            if cloud_mem_text:
-                import json
-                try:
-                    cloud_mem = json.loads(cloud_mem_text)
-                    local_mem = json.loads(MEMORY_FILE.read_text(encoding="utf-8"))
-                    merged = list(set(cloud_mem + local_mem))
-                    MEMORY_FILE.write_text(json.dumps(merged, indent=2), encoding="utf-8")
-                    blob = client._bucket.blob("memory.json")
-                    client._retry(blob.upload_from_string, json.dumps(merged, indent=2))
-                except Exception:
-                    pass
-            else:
-                blob = client._bucket.blob("memory.json")
-                client._retry(blob.upload_from_string, MEMORY_FILE.read_text(encoding="utf-8"))
+                blob = client._bucket.blob("sudo-config.json")
+                client._retry(blob.upload_from_string, json.dumps(json.loads(CONFIG_FILE.read_text(encoding="utf-8")), indent=2))
+            except Exception:
+                pass
         else:
-            cloud_mem_text = client.read_file_text("memory.json")
-            if cloud_mem_text:
-                MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-                MEMORY_FILE.write_text(cloud_mem_text, encoding="utf-8")
+            import json
+            blob = client._bucket.blob("sudo-config.json")
+            client._retry(blob.upload_from_string, json.dumps(json.loads(CONFIG_FILE.read_text(encoding="utf-8")), indent=2))
     except Exception:
         pass
 
@@ -2452,6 +2426,10 @@ def run_chat(args) -> int:
                     spinner.stop()
                     print(f"\n\033[31mError during stream: {e}\033[0m")
                     break
+                except KeyboardInterrupt:
+                    spinner.stop()
+                    print("\n\033[33m[Generation Interrupted]\033[0m\n")
+                    break
                     
                 print()
                 
@@ -2543,8 +2521,8 @@ def run_chat(args) -> int:
                 print_status_bar(provider.model, messages, last_response_time, start_time)
             
         except KeyboardInterrupt:
-            print("\nInterrupted.")
-            continue
+            print("\nExiting chat. Goodbye!")
+            break
             
     shutdown_mcp_servers()
     stop_telegram_listener()

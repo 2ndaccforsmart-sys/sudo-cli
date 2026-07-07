@@ -14,16 +14,12 @@ ACTIVE_SERVERS: dict[str, subprocess.Popen] = {}
 REGISTERED_MCP_TOOLS: list[str] = []
 
 
+from sudo.core.config import load
+
 def load_mcp_config() -> dict:
-    if not MCP_CONFIG_FILE.exists():
-        # Create empty config
-        MCP_CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        MCP_CONFIG_FILE.write_text(json.dumps({"mcpServers": {}}, indent=2), encoding="utf-8")
-        return {"mcpServers": {}}
-    try:
-        return json.loads(MCP_CONFIG_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {"mcpServers": {}}
+    """Load MCP config from central config."""
+    cfg = load()
+    return {"mcpServers": cfg.mcp_servers}
 
 
 def shutdown_mcp_servers() -> None:
