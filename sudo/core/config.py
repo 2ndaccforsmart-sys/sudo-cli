@@ -47,6 +47,9 @@ class Config:
     gcs_bucket: Optional[str] = None
     gcs_key_file: Optional[str] = None
     mcp_servers: dict = field(default_factory=dict)
+    telegram_token: Optional[str] = None
+    telegram_chat_id: Optional[str] = None
+    telegram_enabled: bool = False
 
     def get_provider_config(self, name: Optional[str] = None) -> ProviderConfig:
         """Resolve provider config, consulting env vars for API keys.
@@ -127,6 +130,9 @@ def _parse(raw: dict) -> Config:
         gcs_bucket=raw.get("gcs_bucket"),
         gcs_key_file=raw.get("gcs_key_file"),
         mcp_servers=raw.get("mcp_servers", {}),
+        telegram_token=raw.get("telegram_token"),
+        telegram_chat_id=raw.get("telegram_chat_id"),
+        telegram_enabled=raw.get("telegram_enabled", False),
     )
 
 
@@ -146,6 +152,9 @@ def save(cfg: Config) -> None:
         "gcs_bucket": cfg.gcs_bucket,
         "gcs_key_file": cfg.gcs_key_file,
         "mcp_servers": cfg.mcp_servers,
+        "telegram_token": cfg.telegram_token,
+        "telegram_chat_id": cfg.telegram_chat_id,
+        "telegram_enabled": cfg.telegram_enabled,
     }
     if yaml is not None:
         CONFIG_YAML.write_text(yaml.safe_dump(data, default_flow_style=False, sort_keys=False))

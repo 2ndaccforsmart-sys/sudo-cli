@@ -1467,7 +1467,9 @@ def run_chat(args) -> int:
         
     from sudo.core.plugins import run_hooks
     from sudo.core.mcp import initialize_mcp_servers, shutdown_mcp_servers
+    from sudo.core.telegram import start_telegram_listener, stop_telegram_listener
     initialize_mcp_servers()
+    start_telegram_listener(cfg)
 
     sm = SessionManager()
     session_data = sm.load()
@@ -1595,47 +1597,65 @@ def run_chat(args) -> int:
 
     while True:
         try:
-            # Print prompt and read first keystroke to detect "/" for dropdown
             sys.stdout.write("> ")
             sys.stdout.flush()
-            if _IS_UNIX:
-                fd = sys.stdin.fileno()
-                first = os.read(fd, 1)
-            else:
-                first = msvcrt.getch()
-                if first in (b"\xe0", b"\x00"):
+            
+            from sudo.core.telegram import TELEGRAM_QUEUE
+            user_input = None
+            first = None
+            
+            while True:
+                if not TELEGRAM_QUEUE.empty():
+                    msg_text = TELEGRAM_QUEUE.get()
+                    sys.stdout.write(f"{msg_text}\n")
+                    sys.stdout.flush()
+                    user_input = msg_text
+                    break
+                
+                if _IS_UNIX:
+                    import select
+                    r, w, x = select.select([sys.stdin], [], [], 0.05)
+                    if r:
+                        fd = sys.stdin.fileno()
+                        first = os.read(fd, 1)
+                        break
+                else:
+                    if msvcrt.kbhit():
+                        first = msvcrt.getch()
+                        break
+                
+                time.sleep(0.05)
+
+            if first is not None:
+                if first in (b"\xe0", b"\x00") and not _IS_UNIX:
                     msvcrt.getch()
                     continue
-                if first != b"/":
+                if first != b"/" and not _IS_UNIX:
                     sys.stdout.write(first.decode("utf-8", errors="ignore"))
                     sys.stdout.flush()
 
-            if first in (b"\x03", b""):
-                print("\nExiting chat. Goodbye!")
-                break
-            # Handle escape sequences (arrow keys, etc) — discard them on Unix
-            if first == b"\x1b" and _IS_UNIX:
-                seq = os.read(fd, 2)
-                # Arrow keys / Page keys — ignore and re-prompt
-                continue
-            if first == b"/":
-                # Enter dropdown mode — handles all input from here
-                picked = _pick_command_dropdown("/")
-                if not picked:
-                    continue
-                user_input = picked
-            else:
-                # Not a slash command — use prompt_toolkit for the rest
-                rest = first.decode("utf-8", errors="ignore")
-                try:
-                    if _session is not None:
-                        rest += _session.prompt("").strip()
-                    else:
-                        rest += input("").strip()
-                except (KeyboardInterrupt, EOFError):
+                if first in (b"\x03", b""):
                     print("\nExiting chat. Goodbye!")
                     break
-                user_input = rest
+                if first == b"\x1b" and _IS_UNIX:
+                    seq = os.read(fd, 2)
+                    continue
+                if first == b"/":
+                    picked = _pick_command_dropdown("/")
+                    if not picked:
+                        continue
+                    user_input = picked
+                else:
+                    rest = first.decode("utf-8", errors="ignore")
+                    try:
+                        if _session is not None:
+                            rest += _session.prompt("").strip()
+                        else:
+                            rest += input("").strip()
+                    except (KeyboardInterrupt, EOFError):
+                        print("\nExiting chat. Goodbye!")
+                        break
+                    user_input = rest
                 
             if not user_input:
                 continue
@@ -2074,6 +2094,15 @@ def run_chat(args) -> int:
                         save(cfg)
                         rebuild_system_instructions(messages, cfg)
                         save_active_session_messages(active_session_id, messages)
+                    elif sub == "tg_token":
+                        cfg.telegram_token = sub_val
+                        save(cfg)
+                    elif sub == "tg_chat_id":
+                        cfg.telegram_chat_id = sub_val
+                        save(cfg)
+                    elif sub == "tg_enabled":
+                        cfg.telegram_enabled = sub_val.lower() in ("on", "true", "yes", "1")
+                        save(cfg)
                         
                     print("\n\033[1msudo Configuration:\033[0m")
                     print(f"  \033[1mProvider:\033[0m         {cfg.provider or '(none)'}")
@@ -2082,6 +2111,9 @@ def run_chat(args) -> int:
                     print(f"  \033[1mShow Reasoning:\033[0m   {cfg.show_reasoning}")
                     print(f"  \033[1mGCS Bucket:\033[0m       {cfg.gcs_bucket or '(none)'}")
                     print(f"  \033[1mGCS Key File:\033[0m     {cfg.gcs_key_file or '(none)'}")
+                    print(f"  \033[1mTelegram Enabled:\033[0m {cfg.telegram_enabled}")
+                    print(f"  \033[1mTelegram ChatID:\033[0m  {cfg.telegram_chat_id or '(none)'}")
+                    print(f"  \033[1mTelegram Token:\033[0m   {cfg.telegram_token or '(none)'}")
                     print(f"  \033[1mAlways-on:\033[0m       {', '.join(cfg.always_on_skills) or '(none)'}")
                     print(f"  \033[1mPersonality:\033[0m     {cfg.personality or '(none)'}")
                     print("\nUsage:")
@@ -2090,6 +2122,9 @@ def run_chat(args) -> int:
                     print("  /config bucket <name>")
                     print("  /config keyfile <path>")
                     print("  /config personality <text>")
+                    print("  /config tg_enabled [on|off]")
+                    print("  /config tg_token <bot_token>")
+                    print("  /config tg_chat_id <chat_id>")
                     print()
                     continue
                 elif cmd == "/reasoning":
@@ -2277,6 +2312,7 @@ def run_chat(args) -> int:
             response_start = time.time()
             max_turns = 10
             turn = 0
+            pushed_to_github = False
             
             while turn < max_turns:
                 turn += 1
@@ -2344,6 +2380,8 @@ def run_chat(args) -> int:
                 calls = tools.parse_tool_calls(current_response)
                 if calls:
                     for c in calls:
+                        if c.get("name") == "github_push":
+                            pushed_to_github = True
                         run_hooks("on_tool_before", c.get("name"), c.get("arguments", {}))
 
                 tool_spinner = None
@@ -2402,6 +2440,11 @@ def run_chat(args) -> int:
                         messages.append({"role": "assistant", "content": current_response})
                         save_active_session_messages(active_session_id, messages)
                         print("\n\033[32m✧٩(ˊᗜˋ*)و✧ got it!\033[0m")
+                        from sudo.core.telegram import send_telegram_message
+                        if pushed_to_github:
+                            send_telegram_message(cfg, "The task has been completed. Changes pushed.")
+                        else:
+                            send_telegram_message(cfg, "The task has been completed.")
                     break
                     
             print()
@@ -2414,4 +2457,5 @@ def run_chat(args) -> int:
             continue
             
     shutdown_mcp_servers()
+    stop_telegram_listener()
     return 0
