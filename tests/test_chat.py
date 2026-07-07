@@ -14,6 +14,7 @@ from sudo.commands.chat import (
     load_multimodal_file,
     trim_context,
     parse_usage,
+    stream_filter_think_tags,
 )
 
 
@@ -157,3 +158,40 @@ class TestParseUsage:
         assert parse_usage({}, "openai") == (0, 0)
         assert parse_usage({}, "anthropic") == (0, 0)
         assert parse_usage({}, "google") == (0, 0)
+
+
+class TestStreamFilterThinkTags:
+    def test_no_think_tags(self):
+        stream = ["Hello, ", "world!", " How are ", "you?"]
+        result = list(stream_filter_think_tags(stream))
+        assert "".join(result) == "Hello, world! How are you?"
+
+    def test_simple_think_filtering(self):
+        stream = ["Hello <think>secret thought</think> world!"]
+        result = list(stream_filter_think_tags(stream))
+        assert "".join(result) == "Hello  world!"
+
+    def test_split_think_tags(self):
+        stream = ["Hello <thi", "nk>secret ", "thought</th", "ink> world!"]
+        result = list(stream_filter_think_tags(stream))
+        assert "".join(result) == "Hello  world!"
+
+    def test_multiple_think_tags(self):
+        stream = ["A <think>1</think> B <think>2</think> C"]
+        result = list(stream_filter_think_tags(stream))
+        assert "".join(result) == "A  B  C"
+
+    def test_unclosed_think_tag(self):
+        stream = ["A <think> unfinished"]
+        result = list(stream_filter_think_tags(stream))
+        assert "".join(result) == "A "
+
+    def test_regular_less_than_sign(self):
+        stream = ["A < B and B < C"]
+        result = list(stream_filter_think_tags(stream))
+        assert "".join(result) == "A < B and B < C"
+
+    def test_prefix_lookalike(self):
+        stream = ["Hello <thi", "s is not a tag"]
+        result = list(stream_filter_think_tags(stream))
+        assert "".join(result) == "Hello <this is not a tag"

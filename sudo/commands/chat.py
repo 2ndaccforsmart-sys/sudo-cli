@@ -33,6 +33,50 @@ def _strip_think_tags(text: str) -> str:
     return re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
 
 
+def stream_filter_think_tags(stream: Generator[str, None, None]) -> Generator[str, None, None]:
+    """Filter out <think>...</think> tags from a chunk stream in real-time."""
+    in_think = False
+    buf = ""
+    open_tag = "<think>"
+    close_tag = "</think>"
+    
+    for chunk in stream:
+        buf += chunk
+        while buf:
+            if not in_think:
+                idx = buf.find("<")
+                if idx == -1:
+                    yield buf
+                    buf = ""
+                else:
+                    if idx > 0:
+                        yield buf[:idx]
+                        buf = buf[idx:]
+                    if buf.startswith(open_tag):
+                        in_think = True
+                        buf = buf[len(open_tag):]
+                    elif open_tag.startswith(buf):
+                        break
+                    else:
+                        yield buf[0]
+                        buf = buf[1:]
+            else:
+                idx = buf.find("<")
+                if idx == -1:
+                    buf = ""
+                else:
+                    buf = buf[idx:]
+                    if buf.startswith(close_tag):
+                        in_think = False
+                        buf = buf[len(close_tag):]
+                    elif close_tag.startswith(buf):
+                        break
+                    else:
+                        buf = buf[1:]
+    if buf and not in_think:
+        yield buf
+
+
 SYSTEM_PROMPT = (
     "You are SUDO, an autonomous AI coding assistant running in Android Termux.\n\n"
     "CRITICAL CONSTRAINTS:\n"
@@ -378,26 +422,12 @@ def parse_usage(response: dict, api_type: str) -> tuple[int, int]:
     return p_tok, c_tok
 
 
-# Track status bar state for in-place updates
-_status_bar_printed = False
-STATUS_BAR_HEIGHT = 3  # separator + status + separator
-
-
 def print_status_bar(model: str, messages: list[dict], last_response_time: float, start_time: float) -> None:
-    global _status_bar_printed
     tw = terminal_width()
-
-    # If we printed a status bar before, clear the old3 lines before reprinting
-    if _status_bar_printed:
-        sys.stdout.write(f"\x1b[{STATUS_BAR_HEIGHT}A")  # move up 3 lines
-        sys.stdout.write(f"\x1b[{STATUS_BAR_HEIGHT}J")  # clear from cursor down
-        sys.stdout.flush()
-    _status_bar_printed = True
 
     total_chars = sum(len(m["content"]) for m in messages if m.get("role") != "system")
     tokens = total_chars // 4
 
-    # Truncate model name to save visual space for the progress bar
     display_model = model
     if len(display_model) > 16:
         display_model = display_model[:13] + "..."
@@ -1191,13 +1221,23 @@ def run_chat(args) -> int:
         usage_stats = {"prompt_tokens": 0, "completion_tokens": 0}
         try:
             messages = trim_context(messages, provider.model)
-            for chunk in chat_stream(provider, messages, usage_stats=usage_stats):
-                current_response += chunk
-            # Strip think tags and print clean output
-            visible = _strip_think_tags(current_response)
-            if visible and not quiet:
-                print(visible, end="", flush=True)
-            elif current_response and not quiet:
+            raw_response = []
+            def raw_logger(stream):
+                for chunk in stream:
+                    raw_response.append(chunk)
+                    yield chunk
+
+            logged_stream = raw_logger(chat_stream(provider, messages, usage_stats=usage_stats))
+            filtered_stream = stream_filter_think_tags(logged_stream)
+
+            visible_response = ""
+            for chunk in filtered_stream:
+                if not quiet:
+                    print(chunk, end="", flush=True)
+                visible_response += chunk
+
+            current_response = "".join(raw_response)
+            if not visible_response.strip() and current_response.strip() and not quiet:
                 print(current_response, end="", flush=True)
         except Exception as e:
             if json_output:
@@ -1558,13 +1598,22 @@ def run_chat(args) -> int:
                 # Trim context if approaching token limit
                 messages = trim_context(messages, provider.model)
                 try:
-                    for chunk in chat_stream(provider, messages, usage_stats=usage_stats):
-                        current_response += chunk
-                    # Strip think tags and print clean output
-                    visible = _strip_think_tags(current_response)
-                    if visible:
-                        print(visible, end="", flush=True)
-                    elif current_response:
+                    raw_response = []
+                    def raw_logger(stream):
+                        for chunk in stream:
+                            raw_response.append(chunk)
+                            yield chunk
+
+                    logged_stream = raw_logger(chat_stream(provider, messages, usage_stats=usage_stats))
+                    filtered_stream = stream_filter_think_tags(logged_stream)
+
+                    visible_response = ""
+                    for chunk in filtered_stream:
+                        print(chunk, end="", flush=True)
+                        visible_response += chunk
+
+                    current_response = "".join(raw_response)
+                    if not visible_response.strip() and current_response.strip():
                         print(current_response, end="", flush=True)
                 except Exception as e:
                     print(f"\n\033[31mError during stream: {e}\033[0m")
