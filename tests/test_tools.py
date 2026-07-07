@@ -3,6 +3,7 @@
 import os
 import tempfile
 from pathlib import Path
+from unittest.mock import patch, MagicMock
 
 from sudo.core.tools import (
     ToolSpec,
@@ -151,3 +152,64 @@ def test_custom_tool_registration():
 
     # Cleanup
     del TOOL_REGISTRY["test_custom"]
+
+
+def test_gcs_tools_registered():
+    assert "gcs_list_files" in TOOL_REGISTRY
+    assert "gcs_read_file" in TOOL_REGISTRY
+    assert "gcs_write_file" in TOOL_REGISTRY
+    assert "gcs_delete_file" in TOOL_REGISTRY
+    assert "gcs_make_directory" in TOOL_REGISTRY
+
+
+@patch("sudo.core.tools._get_gcs_client")
+def test_execute_gcs_list_files(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.list_files.return_value = [
+        {"name": "file1.txt", "size": 1024, "updated": "2026-07-07T12:00:00"}
+    ]
+    mock_get_client.return_value = mock_client
+    
+    result = execute_tool("gcs_list_files", {"prefix": "test"})
+    assert "file1.txt" in result
+    assert "1.0 KB" in result
+
+
+@patch("sudo.core.tools._get_gcs_client")
+def test_execute_gcs_read_file(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.read_file_text.return_value = "gcs file content"
+    mock_get_client.return_value = mock_client
+    
+    result = execute_tool("gcs_read_file", {"path": "test.txt"})
+    assert "gcs file content" in result
+
+
+@patch("sudo.core.tools._get_gcs_client")
+def test_execute_gcs_write_file(mock_get_client):
+    mock_client = MagicMock()
+    mock_get_client.return_value = mock_client
+    
+    result = execute_tool("gcs_write_file", {"path": "test.txt", "content": "hello gcs"})
+    assert "successfully written to GCS" in result
+    mock_client._bucket.blob.assert_called_with("test.txt")
+
+
+@patch("sudo.core.tools._get_gcs_client")
+def test_execute_gcs_delete_file(mock_get_client):
+    mock_client = MagicMock()
+    mock_client.delete_file.return_value = True
+    mock_get_client.return_value = mock_client
+    
+    result = execute_tool("gcs_delete_file", {"path": "test.txt"})
+    assert "successfully deleted from GCS" in result
+
+
+@patch("sudo.core.tools._get_gcs_client")
+def test_execute_gcs_make_directory(mock_get_client):
+    mock_client = MagicMock()
+    mock_get_client.return_value = mock_client
+    
+    result = execute_tool("gcs_make_directory", {"path": "folder"})
+    assert "successfully created in GCS" in result
+    mock_client._bucket.blob.assert_called_with("folder/")

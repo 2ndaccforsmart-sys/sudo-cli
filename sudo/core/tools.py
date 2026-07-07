@@ -68,6 +68,85 @@ def get_system_prompt_tools() -> str:
 
 # ── Tool Handlers ────────────────────────────────────────────────────────
 
+def _get_gcs_client():
+    from sudo.core.sync.registry import SyncRegistry
+    from sudo.core.sync.gcs_client import GCSClient
+    
+    registry = SyncRegistry()
+    registry.load()
+    settings = registry.get_settings()
+    
+    bucket = settings.gcs_bucket or os.environ.get("GCS_BUCKET")
+    creds = settings.gcs_credentials_path or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    
+    if not bucket:
+        raise ValueError(
+            "GCS is not configured. Please set the GCS bucket name in sync settings "
+            "or GCS_BUCKET environment variable."
+        )
+    return GCSClient(bucket, creds)
+
+
+def _handle_gcs_list_files(prefix: str = "") -> str:
+    try:
+        client = _get_gcs_client()
+        files = client.list_files(prefix)
+        if not files:
+            return f"[Tool Output: No files found in GCS under prefix '{prefix}']"
+        lines = [f"Files in GCS under prefix '{prefix}':"]
+        for f in files:
+            size_kb = f['size'] / 1024 if f['size'] is not None else 0
+            lines.append(f"  - {f['name']} ({size_kb:.1f} KB, updated: {f['updated']})")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"[Tool Error: {e}]"
+
+
+def _handle_gcs_read_file(path: str) -> str:
+    try:
+        client = _get_gcs_client()
+        content = client.read_file_text(path)
+        if content is None:
+            return f"[Tool Error: File '{path}' not found in GCS]"
+        truncated_content = content[:5000]
+        suffix = "\n... (truncated, file too large)" if len(content) > 5000 else ""
+        return f"[Tool Output — gcs_read_file {path}]:\n{truncated_content}{suffix}"
+    except Exception as e:
+        return f"[Tool Error: {e}]"
+
+
+def _handle_gcs_write_file(path: str, content: str) -> str:
+    try:
+        client = _get_gcs_client()
+        blob = client._bucket.blob(path)
+        client._retry(blob.upload_from_string, content)
+        return f"[Tool Output: File '{path}' successfully written to GCS]"
+    except Exception as e:
+        return f"[Tool Error: {e}]"
+
+
+def _handle_gcs_delete_file(path: str) -> str:
+    try:
+        client = _get_gcs_client()
+        success = client.delete_file(path)
+        if success:
+            return f"[Tool Output: File '{path}' successfully deleted from GCS]"
+        else:
+            return f"[Tool Error: Failed to delete file '{path}' from GCS]"
+    except Exception as e:
+        return f"[Tool Error: {e}]"
+
+
+def _handle_gcs_make_directory(path: str) -> str:
+    try:
+        client = _get_gcs_client()
+        folder_path = path if path.endswith('/') else path + '/'
+        blob = client._bucket.blob(folder_path)
+        client._retry(blob.upload_from_string, "")
+        return f"[Tool Output: Directory '{folder_path}' successfully created in GCS]"
+    except Exception as e:
+        return f"[Tool Error: {e}]"
+
 def _handle_read_file(path: str) -> str:
     abs_path = os.path.abspath(path)
     if not os.path.exists(abs_path):
@@ -220,6 +299,52 @@ register_tool(ToolSpec(
     disabled=True,
 ))
 
+register_tool(ToolSpec(
+    name="gcs_list_files",
+    description="List all files in GCS under a prefix/directory path. Use to see what files exist in GCS.",
+    parameters={
+        "prefix": _param("string", "Filter results to files starting with this prefix (optional)", required=False),
+    },
+    handler=_handle_gcs_list_files,
+))
+
+register_tool(ToolSpec(
+    name="gcs_read_file",
+    description="Read the contents of a file directly from GCS (max 5000 chars).",
+    parameters={
+        "path": _param("string", "Full cloud path to the file in GCS", required=True),
+    },
+    handler=_handle_gcs_read_file,
+))
+
+register_tool(ToolSpec(
+    name="gcs_write_file",
+    description="Write/upload text content directly to a cloud file in GCS.",
+    parameters={
+        "path": _param("string", "Full cloud path to write the file to in GCS", required=True),
+        "content": _param("string", "Text content to write to the file", required=True),
+    },
+    handler=_handle_gcs_write_file,
+))
+
+register_tool(ToolSpec(
+    name="gcs_delete_file",
+    description="Delete a file from GCS.",
+    parameters={
+        "path": _param("string", "Full cloud path to the file in GCS to delete", required=True),
+    },
+    handler=_handle_gcs_delete_file,
+))
+
+register_tool(ToolSpec(
+    name="gcs_make_directory",
+    description="Create a virtual directory/folder path in GCS (creates a trailing slash placeholder).",
+    parameters={
+        "path": _param("string", "Directory path to create (e.g. folder/subfolder)", required=True),
+    },
+    handler=_handle_gcs_make_directory,
+))
+
 
 # ── Tool Call Parsing (backward-compatible XML + JSON for future use) ─────────
 
@@ -245,6 +370,11 @@ def parse_tool_calls(text: str) -> list[dict[str, Any]]:
         "write_file": (r'<tool:write_file\s+path=["\'](.*?)["\']\s*>(.*?)</tool:write_file>', ["path", "content"]),
         "delete_file": (r'<tool:delete_file\s+path=["\'](.*?)["\']\s*/>', ["path"]),
         "run_command": (r'<tool:run_command\s+cmd=["\'](.*?)["\']\s*/>', ["cmd"]),
+        "gcs_list_files": (r'<tool:gcs_list_files(?:\s+prefix=["\'](.*?)["\'])?\s*/>', ["prefix"]),
+        "gcs_read_file": (r'<tool:gcs_read_file\s+path=["\'](.*?)["\']\s*/>', ["path"]),
+        "gcs_write_file": (r'<tool:gcs_write_file\s+path=["\'](.*?)["\']\s*>(.*?)</tool:gcs_write_file>', ["path", "content"]),
+        "gcs_delete_file": (r'<tool:gcs_delete_file\s+path=["\'](.*?)["\']\s*/>', ["path"]),
+        "gcs_make_directory": (r'<tool:gcs_make_directory\s+path=["\'](.*?)["\']\s*/>', ["path"]),
     }
 
     for name, (pattern, arg_names) in xml_handlers.items():
