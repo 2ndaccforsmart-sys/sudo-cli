@@ -27,6 +27,12 @@ from sudo.utils.constants import estimate_model_cost
 from sudo import __version__
 
 
+def _strip_think_tags(text: str) -> str:
+    """Remove <think>...</think> tags and return only visible content."""
+    import re
+    return re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+
+
 SYSTEM_PROMPT = (
     "You are SUDO, an autonomous AI coding assistant running in Android Termux.\n\n"
     "CRITICAL CONSTRAINTS:\n"
@@ -1211,6 +1217,13 @@ def run_chat(args) -> int:
                             print(chunk, end="", flush=True)
             if _tag_buf and not quiet:
                 print(_tag_buf, end="", flush=True)
+            # Fallback: if nothing was visible (e.g. model only output think tags), show stripped response
+            if current_response and not _strip_think_tags(current_response) and not quiet:
+                visible = _strip_think_tags(current_response)
+                if visible:
+                    print(visible, end="", flush=True)
+                else:
+                    print(current_response, end="", flush=True)
         except Exception as e:
             if json_output:
                 print(json.dumps({"error": str(e)}))
@@ -1601,6 +1614,10 @@ def run_chat(args) -> int:
                     # Flush any remaining tag buffer (if stream ends mid-tag, print it)
                     if _tag_buf:
                         print(_tag_buf, end="", flush=True)
+                    # Fallback: if nothing visible (model only output think tags), show stripped response
+                    visible = _strip_think_tags(current_response)
+                    if current_response and not visible:
+                        print(current_response, end="", flush=True)
                 except Exception as e:
                     print(f"\n\033[31mError during stream: {e}\033[0m")
                     break
