@@ -29,6 +29,7 @@ class SyncResult:
     files_downloaded: int = 0
     files_skipped: int = 0
     files_deleted: int = 0
+    local_files: int = 0
     conflicts: int = 0
     errors: list[str] = field(default_factory=list)
     git_committed: bool = False

@@ -1179,32 +1179,28 @@ def run_chat(args) -> int:
         try:
             messages = trim_context(messages, provider.model)
             _in_think = False
-            _buf = ""
-            _OPEN = "<think>"
-            _CLOSE = "</think>"
-            _MAX_LOOK = max(len(_OPEN), len(_CLOSE))
+            _tag_buf = ""
             for chunk in chat_stream(provider, messages, usage_stats=usage_stats):
-                for char in chunk:
-                    current_response += char
-                    _buf += char
-                    if _in_think and _buf.endswith(_CLOSE):
+                current_response += chunk
+                if _in_think:
+                    _tag_buf += chunk
+                    close_idx = _tag_buf.find("</think>")
+                    if close_idx != -1:
                         _in_think = False
-                        _buf = ""
-                        continue
-                    if not _in_think and _buf.endswith(_OPEN):
+                        _tag_buf = ""
+                else:
+                    open_idx = chunk.find("<think>")
+                    if open_idx != -1:
+                        pre = chunk[:open_idx]
+                        if pre and not quiet:
+                            print(pre, end="", flush=True)
                         _in_think = True
-                        _buf = ""
-                        continue
-                    if not _in_think and len(_buf) > _MAX_LOOK:
-                        safe = _buf[0]
-                        _buf = _buf[1:]
-                        if not quiet:
-                            sys.stdout.write(safe)
-            for safe in _buf:
-                if not quiet:
-                    sys.stdout.write(safe)
-            if not quiet:
-                sys.stdout.flush()
+                        _tag_buf = chunk[open_idx + len("<think>"):]
+                    else:
+                        if chunk and not quiet:
+                            print(chunk, end="", flush=True)
+            if _tag_buf and not quiet:
+                print(_tag_buf, end="", flush=True)
         except Exception as e:
             if json_output:
                 print(json.dumps({"error": str(e)}))
@@ -1563,47 +1559,34 @@ def run_chat(args) -> int:
                 # Trim context if approaching token limit
                 messages = trim_context(messages, provider.model)
                 try:
-                    is_start_of_line = True
                     _in_think = False
-                    _buf = ""
-                    _OPEN = "<think>"
-                    _CLOSE = "</think>"
-                    _MAX_LOOK = max(len(_OPEN), len(_CLOSE))  # 8
+                    _tag_buf = ""
                     for chunk in chat_stream(provider, messages, usage_stats=usage_stats):
-                        for char in chunk:
-                            current_response += char
-                            _buf += char
-                            # Check for closing think tag (works in both states)
-                            if _in_think and _buf.endswith(_CLOSE):
+                        current_response += chunk
+                        if _in_think:
+                            # Inside <think> — look for closing tag
+                            _tag_buf += chunk
+                            close_idx = _tag_buf.find("</think>")
+                            if close_idx != -1:
                                 _in_think = False
-                                _buf = ""
-                                continue
-                            # Check for opening think tag
-                            if not _in_think and _buf.endswith(_OPEN):
+                                _tag_buf = ""
+                        else:
+                            # Outside think — look for opening tag
+                            open_idx = chunk.find("<think>")
+                            if open_idx != -1:
+                                # Print text before the tag, then enter think mode
+                                pre = chunk[:open_idx]
+                                if pre:
+                                    print(pre, end="", flush=True)
                                 _in_think = True
-                                _buf = ""
-                                continue
-                            # Not part of any tag — flush old safe chars
-                            if not _in_think and len(_buf) > _MAX_LOOK:
-                                safe = _buf[0]
-                                _buf = _buf[1:]
-                                if safe == "\n":
-                                    is_start_of_line = True
-                                if is_start_of_line:
-                                    if safe != "\n":
-                                        sys.stdout.write("   ")
-                                        is_start_of_line = False
-                                sys.stdout.write(safe)
-                    # Flush remaining buffer
-                    for safe in _buf:
-                        if safe == "\n":
-                            is_start_of_line = True
-                        if is_start_of_line:
-                            if safe != "\n":
-                                sys.stdout.write("   ")
-                                is_start_of_line = False
-                        sys.stdout.write(safe)
-                    sys.stdout.flush()
+                                _tag_buf = chunk[open_idx + len("<think>"):]
+                            else:
+                                # No tag in this chunk — print it all
+                                if chunk:
+                                    print(chunk, end="", flush=True)
+                    # Flush any remaining tag buffer (if stream ends mid-tag, print it)
+                    if _tag_buf:
+                        print(_tag_buf, end="", flush=True)
                 except Exception as e:
                     print(f"\n\033[31mError during stream: {e}\033[0m")
                     break
