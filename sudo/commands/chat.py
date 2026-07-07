@@ -427,22 +427,23 @@ _status_bar_printed = False
 
 def clear_previous_status_bar(user_input: str) -> None:
     global _status_bar_printed
-    if not _status_bar_printed:
-        return
-    _status_bar_printed = False
-    
+    if _status_bar_printed:
+        _status_bar_printed = False
+        tw = terminal_width()
+        u_lines = 0
+        for line in user_input.splitlines():
+            prompt_len = len(line) if u_lines > 0 else len("> " + line)
+            u_lines += max(1, (prompt_len + tw - 1) // tw)
+        u_lines = max(1, u_lines)
+        
+        move_up = u_lines + 2
+        sys.stdout.write(f"\x1b[{move_up}A")
+        sys.stdout.write("\x1b[2M")
+        sys.stdout.write(f"\x1b[{u_lines}B")
+        sys.stdout.flush()
+        
     tw = terminal_width()
-    u_lines = 0
-    for line in user_input.splitlines():
-        prompt_len = len(line) if u_lines > 0 else len("> " + line)
-        u_lines += max(1, (prompt_len + tw - 1) // tw)
-    u_lines = max(1, u_lines)
-    
-    move_up = u_lines + 3
-    sys.stdout.write(f"\x1b[{move_up}A")
-    sys.stdout.write("\x1b[3M")
-    sys.stdout.write(f"\x1b[{u_lines}B")
-    sys.stdout.flush()
+    print("\033[38;5;208m" + "─" * tw + "\033[0m")
 
 
 def print_status_bar(model: str, messages: list[dict], last_response_time: float, start_time: float) -> None:
@@ -459,17 +460,17 @@ def print_status_bar(model: str, messages: list[dict], last_response_time: float
     display_model = re.sub(r"[^\w\-./:]+", "_", display_model)
 
     ctx_limit = get_context_limit(model)
+    if ctx_limit >= 1000000:
+        ctx_text = f"{ctx_limit // 1000000}M"
+    elif ctx_limit >= 1000:
+        ctx_text = f"{ctx_limit // 1000}k"
+    else:
+        ctx_text = str(ctx_limit)
 
     if tokens == 0:
-        ctx_text = "--"
         bar_pct = 0
         pct_text = "--"
     else:
-        if tokens >= 1000:
-            ctx_text = f"{tokens/1000:.1f}k"
-        else:
-            ctx_text = str(tokens)
-
         bar_pct = min(100, int((tokens / ctx_limit) * 100))
         pct_text = f"{bar_pct}%"
 
