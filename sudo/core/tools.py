@@ -148,6 +148,34 @@ def _handle_gcs_make_directory(path: str) -> str:
         return f"[Tool Error: {e}]"
 
 
+def _handle_gcs_upload(local_path: str, gcs_dest_path: str) -> str:
+    try:
+        client = _get_gcs_client()
+        local_abs = os.path.abspath(local_path)
+        if not os.path.exists(local_abs):
+            return f"[Tool Error: Local path '{local_path}' does not exist]"
+            
+        if os.path.isfile(local_abs):
+            blob = client._bucket.blob(gcs_dest_path)
+            with open(local_abs, "rb") as f:
+                client._retry(blob.upload_from_file, f)
+            return f"[Tool Output: File '{local_path}' successfully uploaded to 'gs://{client.bucket_name}/{gcs_dest_path}']"
+        else:
+            uploaded_count = 0
+            for root, dirs, files in os.walk(local_abs):
+                for file in files:
+                    full_local = os.path.join(root, file)
+                    rel_path = os.path.relpath(full_local, local_abs)
+                    dest_blob_path = os.path.join(gcs_dest_path, rel_path).replace("\\", "/")
+                    blob = client._bucket.blob(dest_blob_path)
+                    with open(full_local, "rb") as f:
+                        client._retry(blob.upload_from_file, f)
+                    uploaded_count += 1
+            return f"[Tool Output: Folder '{local_path}' successfully uploaded. Total {uploaded_count} files written to 'gs://{client.bucket_name}/{gcs_dest_path}']"
+    except Exception as e:
+        return f"[Tool Error: {e}]"
+
+
 def _handle_save_skill(name: str, description: str, system_prompt: str) -> str:
     try:
         from sudo.core.skills import add_skill
@@ -403,6 +431,16 @@ register_tool(ToolSpec(
 ))
 
 register_tool(ToolSpec(
+    name="gcs_upload",
+    description="Upload a local file or folder recursively from your PC to Google Cloud Storage.",
+    parameters={
+        "local_path": _param("string", "Local file or directory path to upload", required=True),
+        "gcs_dest_path": _param("string", "Destination GCS path (e.g. folder/subfolder or folder/file.txt)", required=True),
+    },
+    handler=_handle_gcs_upload,
+))
+
+register_tool(ToolSpec(
     name="save_skill",
     description="Save a new custom skill (behavior/system prompt) for the assistant. The skill will be available as a slash command in the chat.",
     parameters={
@@ -462,6 +500,7 @@ def parse_tool_calls(text: str) -> list[dict[str, Any]]:
         "gcs_write_file": (r'<tool:gcs_write_file\s+path=["\'](.*?)["\']\s*>(.*?)</tool:gcs_write_file>', ["path", "content"]),
         "gcs_delete_file": (r'<tool:gcs_delete_file\s+path=["\'](.*?)["\']\s*/>', ["path"]),
         "gcs_make_directory": (r'<tool:gcs_make_directory\s+path=["\'](.*?)["\']\s*/>', ["path"]),
+        "gcs_upload": (r'<tool:gcs_upload\s+local_path=["\'](.*?)["\']\s+gcs_dest_path=["\'](.*?)["\']\s*/>', ["local_path", "gcs_dest_path"]),
         "save_skill": (r'<tool:save_skill\s+name=["\'](.*?)["\']\s+description=["\'](.*?)["\']\s*>(.*?)</tool:save_skill>', ["name", "description", "system_prompt"]),
         "browse": (r'<tool:browse\s+url=["\'](.*?)["\']\s*/>', ["url"]),
         "github_push": (r'<tool:github_push\s+commit_message=["\'](.*?)["\'](?:\s+branch=["\'](.*?)["\'])?\s*/>', ["commit_message", "branch"]),

@@ -82,6 +82,48 @@ class SpinnerThread(threading.Thread):
         sys.stdout.flush()
 
 
+def get_subjective_states(user_input: str) -> list[str]:
+    ui_lower = user_input.lower()
+    if any(k in ui_lower for k in ("gcs", "bucket", "cloud", "upload", "gcp")):
+        return [
+            "(=^・ω・^=) purring...",
+            "(=^・ω・^=) kneading...",
+            "[ ⠸ ] 🧬 Synthesizing...",
+            "[ ⠦ ] 🛠️  Running GCS Operation..."
+        ]
+    if any(k in ui_lower for k in ("file", "read", "write", "patch", "create", "folder", "directory")):
+        return [
+            "◜(｡ •́︿•̀｡) pondering...",
+            "[ ⠹ ] 📄 Reading File...",
+            "[ ⠸ ] 📝 Patching File...",
+            "(=^・ω・^=) kneading..."
+        ]
+    if any(k in ui_lower for k in ("code", "python", "refactor", "test", "pytest", "bug", "debug", "error", "syntax")):
+        return [
+            "[ ⠴ ] 🪲  Debugging...",
+            "[ ⠼ ] ✍️  Self-Correcting...",
+            "[ ⠹ ] 🔮 Analyzing...",
+            "◠(⊙_⊙) contemplating..."
+        ]
+    if any(k in ui_lower for k in ("web", "browse", "search", "fetch", "url", "scrape", "google")):
+        return [
+            "[ ⠋ ] 🌐 Browsing...",
+            "[ ⠙ ] 🔍 Searching...",
+            "◜(｡ •́︿•̀｡) pondering..."
+        ]
+    return [
+        "◜(｡ •́︿•̀｡) pondering...",
+        "[ ⠋ ] 🧠 Thinking...",
+        "◠(⊙_⊙) contemplating...",
+        "[ ⠙ ] 🧐 Reflecting...",
+        "[ ⠹ ] 🔮 Analyzing...",
+        "[ ⠸ ] 🧬 Synthesizing...",
+        "(◔_◔) pondering...",
+        "[ ⠼ ] ✍️  Self-Correcting...",
+        "[ 🤖 ] 💭 Internal Monologue..."
+    ]
+
+
 def _strip_think_tags(text: str) -> str:
     """Remove <think>...</think> tags and return only visible content."""
     import re
@@ -1999,17 +2041,7 @@ def run_chat(args) -> int:
                     print(f"\033[38;5;208m─  ⚡ SUDO BTW  " + "─" * (tw - 16) + "\033[0m")
                     try:
                         spinner = SpinnerThread()
-                        spinner.start_cycling([
-                            "◜(｡ •́︿•̀｡) pondering...",
-                            "[ ⠋ ] 🧠 Thinking...",
-                            "◠(⊙_⊙) contemplating...",
-                            "[ ⠙ ] 🧐 Reflecting...",
-                            "[ ⠹ ] 🔮 Analyzing...",
-                            "[ ⠸ ] 🧬 Synthesizing...",
-                            "(◔_◔) pondering...",
-                            "[ ⠼ ] ✍️  Self-Correcting...",
-                            "[ 🤖 ] 💭 Internal Monologue..."
-                        ])
+                        spinner.start_cycling(get_subjective_states(cmd_arg))
                         spinner.start()
 
                         usage_stats = {"prompt_tokens": 0, "completion_tokens": 0}
@@ -2325,17 +2357,7 @@ def run_chat(args) -> int:
                 messages = trim_context(messages, provider.model)
                 try:
                     spinner = SpinnerThread()
-                    spinner.start_cycling([
-                        "◜(｡ •́︿•̀｡) pondering...",
-                        "[ ⠋ ] 🧠 Thinking...",
-                        "◠(⊙_⊙) contemplating...",
-                        "[ ⠙ ] 🧐 Reflecting...",
-                        "[ ⠹ ] 🔮 Analyzing...",
-                        "[ ⠸ ] 🧬 Synthesizing...",
-                        "(◔_◔) pondering...",
-                        "[ ⠼ ] ✍️  Self-Correcting...",
-                        "[ 🤖 ] 💭 Internal Monologue..."
-                    ])
+                    spinner.start_cycling(get_subjective_states(user_input))
                     spinner.start()
 
                     raw_response = []

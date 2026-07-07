@@ -295,3 +295,33 @@ def test_execute_github_push(mock_run):
     assert "git push output" in result
 
 
+def test_gcs_upload_tool_registered():
+    assert "gcs_upload" in TOOL_REGISTRY
+
+
+def test_parse_legacy_gcs_upload_xml():
+    text = '<tool:gcs_upload local_path="local.txt" gcs_dest_path="remote.txt"/>'
+    calls = parse_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0]["name"] == "gcs_upload"
+    assert calls[0]["arguments"]["local_path"] == "local.txt"
+    assert calls[0]["arguments"]["gcs_dest_path"] == "remote.txt"
+
+
+@patch("sudo.core.tools._get_gcs_client")
+def test_execute_gcs_upload_file(mock_get_client, tmp_path):
+    mock_client = MagicMock()
+    mock_get_client.return_value = mock_client
+    
+    local_file = tmp_path / "test.txt"
+    local_file.write_text("file content")
+    
+    result = execute_tool("gcs_upload", {
+        "local_path": str(local_file),
+        "gcs_dest_path": "cloud.txt"
+    })
+    assert "successfully uploaded" in result
+    mock_client._bucket.blob.assert_called_with("cloud.txt")
+
+
+
