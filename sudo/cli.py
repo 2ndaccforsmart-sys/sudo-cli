@@ -52,12 +52,14 @@ def _register_commands(subparsers) -> None:
     import sudo.commands.find as cmd_find
     import sudo.commands.grep as cmd_grep
     import sudo.commands.chat as cmd_chat
+    import sudo.commands.setup as cmd_setup
 
     cmd_provider.register(subparsers)
     cmd_status.register(subparsers)
     cmd_find.register(subparsers)
     cmd_grep.register(subparsers)
     cmd_chat.register(subparsers)
+    cmd_setup.register(subparsers)
 
 
 def main(argv: list[str] | None = None) -> int:

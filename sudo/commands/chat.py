@@ -526,6 +526,268 @@ def print_status_bar(model: str, messages: list[dict], last_response_time: float
     _status_bar_printed = True
 
 
+def _visual_len(s: str) -> int:
+    clean = re.sub(r'\033\[[0-9;]*m', '', s)
+    length = 0
+    for char in clean:
+        if ord(char) > 256:
+            length += 2
+        else:
+            length += 1
+    return length
+
+
+def _render_boxed_ui(title: str, lines: list[str], box_width: int = 58) -> None:
+    sys.stdout.write("\x1b[2J\x1b[H\x1b[?25l")
+    title_str = f" ⚙️Model Picker - {title} "
+    title_len = _visual_len(title_str)
+    dash_len = box_width - title_len - 2
+    if dash_len < 2:
+        dash_len = 2
+    top_border = f"┌─{title_str}{'─' * dash_len}┐"
+    print(top_border)
+    for line in lines:
+        line_len = _visual_len(line)
+        padding = box_width - line_len - 4
+        if padding < 0:
+            padding = 0
+        print(f"│ {line}{' ' * padding} │")
+    print(f"└{'─' * (box_width - 2)}┘")
+    sys.stdout.flush()
+
+
+def _render_boxed_picker(title: str, subtitle: str, options: list[str], sel: int, current: Optional[str] = None) -> None:
+    box_width = 58
+    lines = []
+    lines.append("")
+    lines.append(f"\033[1;37m{subtitle}\033[0m")
+    lines.append("")
+    
+    import shutil
+    try:
+        th = shutil.get_terminal_size().lines
+    except Exception:
+        th = 24
+    viewport_size = max(5, th - 9)
+    
+    top = sel - viewport_size // 2
+    top = max(0, min(top, max(0, len(options) - viewport_size)))
+    bottom = min(top + viewport_size, len(options))
+    
+    if top > 0:
+        lines.append(f"\033[90m  ▲ {top} more above\033[0m")
+    else:
+        lines.append("")
+        
+    for i in range(top, bottom):
+        opt = options[i]
+        is_curr = False
+        if current:
+            is_curr = (opt == current) or (f"({current})" in opt) or (opt.split()[0] == current)
+        curr_marker = "  \033[32m← current\033[0m" if is_curr else ""
+        
+        if i == sel:
+            lines.append(f"\033[1;33m❯ {opt}\033[0m{curr_marker}")
+        else:
+            lines.append(f"  {opt}{curr_marker}")
+            
+    if bottom < len(options):
+        remaining = len(options) - bottom
+        lines.append(f"\033[90m  ▼ {remaining} more below\033[0m")
+    else:
+        lines.append("")
+        
+    lines.append("")
+    lines.append(f"\033[90m[{sel + 1}/{len(options)}]\033[0m")
+    _render_boxed_ui(title, lines, box_width)
+
+
+def run_setup_wizard() -> bool:
+    """Run the interactive setup wizard with beautiful boxed UI."""
+    cfg = load()
+    
+    providers = sorted(list(PROVIDER_REGISTRY.keys()))
+    options = []
+    for p in providers:
+        defn = PROVIDER_REGISTRY[p]
+        has_key = "✓" if (cfg.api_key or os.environ.get(defn.env_key)) else ""
+        key_suffix = " (key configured)" if has_key else ""
+        options.append(f"{defn.display} ({p}){key_suffix}")
+    options.append("Cancel")
+    
+    sel = 0
+    if _IS_UNIX:
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
+        tty.setraw(fd)
+    else:
+        fd = None
+        old = None
+        
+    selected_provider = None
+    try:
+        while True:
+            curr_info = f"Current: {cfg.model or '(none)'} on {cfg.provider or '(none)'}"
+            _render_boxed_picker("Select Provider", curr_info, options, sel, cfg.provider)
+            
+            if _IS_UNIX:
+                ch = os.read(fd, 1)
+            else:
+                ch = msvcrt.getch()
+                
+            if ch in (b"\r", b"\n"):
+                if sel == len(options) - 1: # Cancel
+                    sys.stdout.write("\x1b[2J\x1b[H\x1b[?25h")
+                    sys.stdout.flush()
+                    return False
+                selected_provider = providers[sel]
+                break
+            if ch == b"\x03" or ch == b"q" or (ch == b"\x1b" and not _IS_UNIX):
+                sys.stdout.write("\x1b[2J\x1b[H\x1b[?25h")
+                sys.stdout.flush()
+                return False
+            if ch == b"\x1b" and _IS_UNIX:
+                import select
+                r, _, _ = select.select([fd], [], [], 0.05)
+                if r:
+                    seq = os.read(fd, 2)
+                    if seq == b"[A":
+                        sel = (sel - 1) % len(options)
+                    elif seq == b"[B":
+                        sel = (sel + 1) % len(options)
+            elif ch == b"\xe0" and not _IS_UNIX:
+                next_ch = msvcrt.getch()
+                if next_ch == b"H":
+                    sel = (sel - 1) % len(options)
+                elif next_ch == b"P":
+                    sel = (sel + 1) % len(options)
+    finally:
+        if _IS_UNIX and old is not None:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            
+    sys.stdout.write("\x1b[2J\x1b[H\x1b[?25h")
+    sys.stdout.flush()
+    
+    defn = PROVIDER_REGISTRY[selected_provider]
+    print(f"\nSetting up provider: \033[1;32m{defn.display}\033[0m ({selected_provider})")
+    print(f"  Get API key at: {defn.docs_url}")
+    print(f"  Env variable:   {defn.env_key}\n")
+    
+    env_val = os.environ.get(defn.env_key)
+    use_env = False
+    if env_val:
+        try:
+            choice = input(f"Found {defn.env_key} in environment. Use it? (Y/n): ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return False
+        if choice not in ("n", "no"):
+            use_env = True
+            
+    api_key = ""
+    if not use_env:
+        try:
+            api_key = input("Enter API key (leave empty to skip and use env var later): ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return False
+            
+    suggested = {
+        "google/gemini": ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-pro-exp"],
+        "groq": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768", "gemma2-9b-it"],
+        "github": ["gpt-4o", "gpt-4o-mini", "meta-llama-3.1-70b-instruct", "cohere-command-r-plus"],
+        "openrouter": ["openai/gpt-4o", "meta-llama/llama-3.3-70b-instruct", "google/gemini-2.0-flash-exp", "anthropic/claude-3.5-sonnet"],
+        "openai": ["gpt-4o", "gpt-4o-mini", "o1-mini", "o1-preview"],
+        "anthropic": ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest", "claude-3-opus-latest"],
+        "deepseek": ["deepseek-chat", "deepseek-coder"],
+    }.get(selected_provider, [defn.default_model])
+    
+    models_list = list(suggested)
+    test_key = api_key or env_val
+    if test_key:
+        print("Fetching model list from provider API...")
+        try:
+            prov_inst = ProviderFactory.create(selected_provider, api_key=test_key, model=defn.default_model)
+            fetched = prov_inst.list_models()
+            if fetched:
+                models_list = sorted([m.get("id", m.get("name", "")) for m in fetched if m.get("id") or m.get("name")])
+        except Exception:
+            pass
+            
+    options = list(models_list) + ["Custom / Enter manually", "Cancel"]
+    
+    sel = 0
+    if _IS_UNIX:
+        tty.setraw(fd)
+        
+    selected_model = None
+    try:
+        while True:
+            _render_boxed_picker(defn.display, f"Select a model ({len(models_list)} available)", options, sel, cfg.model)
+            
+            if _IS_UNIX:
+                ch = os.read(fd, 1)
+            else:
+                ch = msvcrt.getch()
+                
+            if ch in (b"\r", b"\n"):
+                if sel == len(options) - 1: # Cancel
+                    sys.stdout.write("\x1b[2J\x1b[H\x1b[?25h")
+                    sys.stdout.flush()
+                    return False
+                if sel == len(options) - 2: # Custom
+                    selected_model = "custom"
+                else:
+                    selected_model = options[sel]
+                break
+            if ch == b"\x03" or ch == b"q" or (ch == b"\x1b" and not _IS_UNIX):
+                sys.stdout.write("\x1b[2J\x1b[H\x1b[?25h")
+                sys.stdout.flush()
+                return False
+            if ch == b"\x1b" and _IS_UNIX:
+                import select
+                r, _, _ = select.select([fd], [], [], 0.05)
+                if r:
+                    seq = os.read(fd, 2)
+                    if seq == b"[A":
+                        sel = (sel - 1) % len(options)
+                    elif seq == b"[B":
+                        sel = (sel + 1) % len(options)
+            elif ch == b"\xe0" and not _IS_UNIX:
+                next_ch = msvcrt.getch()
+                if next_ch == b"H":
+                    sel = (sel - 1) % len(options)
+                elif next_ch == b"P":
+                    sel = (sel + 1) % len(options)
+    finally:
+        if _IS_UNIX and old is not None:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
+            
+    sys.stdout.write("\x1b[2J\x1b[H\x1b[?25h")
+    sys.stdout.flush()
+    
+    if selected_model == "custom":
+        try:
+            selected_model = input("Enter model name: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return False
+        if not selected_model:
+            print("\033[31mModel name cannot be empty.\033[0m")
+            return False
+            
+    cfg.provider = selected_provider
+    if api_key:
+        cfg.api_key = api_key
+    cfg.model = selected_model
+    save(cfg)
+    
+    print("\n\033[1;32m✓ Configuration saved successfully!\033[0m")
+    print(f"  Provider: \033[1m{defn.display}\033[0m")
+    print(f"  Model:    \033[1m{selected_model}\033[0m\n")
+    return True
+
+
 def check_and_run_setup() -> bool:
     """Interactively setup provider, key, and model if not set. Returns True if setup succeeds/is already configured."""
     cfg = load()
@@ -548,127 +810,15 @@ def check_and_run_setup() -> bool:
         
     print("\033[33m⚠️  SUDO CLI is not configured yet.\033[0m")
     try:
-        choice = input("Would you like to set up an LLM provider now? (y/N): ").strip().lower()
+        choice = input("Would you like to run the setup wizard now? (Y/n): ").strip().lower()
     except (KeyboardInterrupt, EOFError):
         print()
         return False
         
-    if choice not in ("y", "yes"):
+    if choice in ("n", "no"):
         return False
         
-    all_providers = sorted(PROVIDER_REGISTRY.keys())
-    print("\nSelect a provider:")
-    for idx, p_name in enumerate(all_providers, 1):
-        defn = PROVIDER_REGISTRY[p_name]
-        print(f"  {idx:2d}. {defn.display} ({p_name})")
-        
-    try:
-        sel = input(f"\nChoose option (1-{len(all_providers)}) or enter provider name: ").strip()
-    except (KeyboardInterrupt, EOFError):
-        print()
-        return False
-        
-    selected_name = ""
-    if sel.isdigit() and 1 <= int(sel) <= len(all_providers):
-        selected_name = all_providers[int(sel)-1]
-    elif sel in PROVIDER_REGISTRY:
-        selected_name = sel
-    else:
-        print("\033[31mInvalid selection.\033[0m")
-        return False
-        
-    defn = PROVIDER_REGISTRY[selected_name]
-    print(f"\nSetting up provider: \033[1m{defn.display}\033[0m ({selected_name})")
-    print(f"  Get API key at: {defn.docs_url}")
-    print(f"  You can set environment variable: {defn.env_key}")
-    
-    try:
-        use_env = input(f"Use environment variable {defn.env_key}? (y/N): ").strip().lower()
-    except (KeyboardInterrupt, EOFError):
-        print()
-        return False
-        
-    api_key = ""
-    if use_env in ("y", "yes"):
-        if os.environ.get(defn.env_key):
-            print(f"\033[32mFound {defn.env_key} in environment.\033[0m")
-        else:
-            print(f"\033[33mWarning: {defn.env_key} is not set in your current environment.\033[0m")
-            print(f"Make sure to export {defn.env_key}=your_key")
-    else:
-        try:
-            api_key = input("Enter API key: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            print()
-            return False
-            
-        if not api_key:
-            print("\033[31mAPI key cannot be empty.\033[0m")
-            return False
-            
-    popular_models = {
-        "google/gemini": ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro", "gemini-2.0-pro-exp"],
-        "groq": ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768", "gemma2-9b-it"],
-        "github": ["gpt-4o", "gpt-4o-mini", "meta-llama-3.1-70b-instruct", "cohere-command-r-plus"],
-        "openrouter": ["openai/gpt-4o", "meta-llama/llama-3.3-70b-instruct", "google/gemini-2.0-flash-exp", "anthropic/claude-3.5-sonnet"],
-        "openai": ["gpt-4o", "gpt-4o-mini", "o1-mini", "o1-preview"],
-        "anthropic": ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest", "claude-3-opus-latest"],
-        "deepseek": ["deepseek-chat", "deepseek-coder"],
-    }
-    
-    suggested = popular_models.get(selected_name, [])
-    selected_model = ""
-    
-    print("\nSelect a model:")
-    if suggested:
-        for idx, m in enumerate(suggested, 1):
-            print(f"  {idx}. {m}")
-        print(f"  {len(suggested)+1}. Custom / Enter manually")
-        
-        try:
-            m_sel = input(f"Choose model (1-{len(suggested)+1}, default 1): ").strip()
-        except (KeyboardInterrupt, EOFError):
-            print()
-            return False
-            
-        if not m_sel:
-            selected_model = suggested[0]
-        elif m_sel.isdigit() and 1 <= int(m_sel) <= len(suggested):
-            selected_model = suggested[int(m_sel)-1]
-        else:
-            try:
-                selected_model = input("Enter model name: ").strip()
-            except (KeyboardInterrupt, EOFError):
-                print()
-                return False
-    else:
-        default_m = defn.default_model if defn else "gpt-4o"
-        try:
-            selected_model = input(f"Enter model name (default {default_m}): ").strip()
-        except (KeyboardInterrupt, EOFError):
-            print()
-            return False
-        if not selected_model:
-            selected_model = default_m
-            
-    if not selected_model:
-        print("\033[31mModel name cannot be empty.\033[0m")
-        return False
-        
-    cfg.provider = selected_name
-    if api_key:
-        cfg.api_key = api_key
-    cfg.model = selected_model
-    save(cfg)
-    print("\n\033[32m✓ Configuration saved successfully!\033[0m")
-    try:
-        provider = ProviderFactory.create(selected_name, api_key=api_key or os.environ.get(defn.env_key), model=selected_model)
-        status = check_key_billing_status(provider)
-        print(f"  Key Type Detected: \033[32m{status}\033[0m")
-    except Exception:
-        pass
-    print()
-    return True
+    return run_setup_wizard()
 
 
 # parse_and_execute_tools moved to sudo.core.tools
@@ -1160,95 +1310,60 @@ def _pick_model_interactive(models: list[dict], current_model: str) -> str | Non
     if not ids:
         return None
 
-    # Find current selection
     sel = 0
     for i, mid in enumerate(ids):
         if mid == current_model:
             sel = i
             break
 
-    fd = sys.stdin.fileno()
-    old = termios.tcgetattr(fd)
-    try:
+    if _IS_UNIX:
+        fd = sys.stdin.fileno()
+        old = termios.tcgetattr(fd)
         tty.setraw(fd)
-        _pick_draw(ids, sel, current_model)
-        while True:
-            ch = os.read(fd, 1)
-            if ch == b"\x1b":
-                seq = os.read(fd, 2)
-                if seq == b"[A":  # Up
-                    sel = (sel - 1) % len(ids)
-                elif seq == b"[B":  # Down
-                    sel = (sel + 1) % len(ids)
-                elif seq == b"[5":  # Page Up
-                    os.read(fd, 1)
-                    sel = max(0, sel - 10)
-                elif seq == b"[6":  # Page Down
-                    os.read(fd, 1)
-                    sel = min(len(ids) - 1, sel + 10)
-                elif seq[0:1] == b"" or seq == b"\x1b":
-                    return None
-            elif ch in (b"\r", b"\n"):
-                return ids[sel]
-            elif ch == b"\x03":
-                return None
-            elif ch == b"q":
-                return None
-            _pick_draw(ids, sel, current_model)
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    else:
+        fd = None
+        old = None
 
-
-def _pick_draw(ids: list[str], sel: int, current: str) -> None:
-    """Render the model picker with viewport scrolling — only visible rows."""
-    import shutil
-    tw = shutil.get_terminal_size().columns
-    # Reserve: 1 header + 1 blank + 1 blank + 1 counter = 4 lines
-    # Also 1 line for "↑ more" / "↓ more" indicators when applicable
-    HEADER_LINES = 5
+    options = list(ids) + ["Cancel"]
     try:
-        th = shutil.get_terminal_size().lines
-    except Exception:
-        th = 24
-    viewport_size = max(4, th - HEADER_LINES)
-
-    # Clamp selection into viewport
-    top = sel - viewport_size // 2
-    top = max(0, min(top, max(0, len(ids) - viewport_size)))
-    bottom = min(top + viewport_size, len(ids))
-
-    sys.stdout.write("\x1b[?25l")        # hide cursor
-    sys.stdout.write("\x1b[2J\x1b[H")    # clear screen, cursor home
-    sys.stdout.write(f"\033[1mSelect a model:\033[0m  (\u2191\u2193 navigate  Enter select  q cancel)\n\n")
-
-    if top > 0:
-        sys.stdout.write(f"  \033[90m\u25b2 {top} more above\033[0m\n")
-    else:
-        sys.stdout.write("\n")
-
-    for i in range(top, bottom):
-        mid = ids[i]
-        # Calculate max display width: tw - prefix(4) - marker(~12) - margin(2)
-        max_name = tw - 20
-        if max_name < 10:
-            max_name = 10
-        display = mid if len(mid) <= max_name else mid[:max_name - 3] + "..."
-        if i == sel:
-            prefix = "\033[32m  \u25b6 \033[0m"
-            marker = " \033[90m(current)\033[0m" if mid == current else ""
-        else:
-            prefix = "    "
-            marker = " \033[90m(current)\033[0m" if mid == current else ""
-        sys.stdout.write(f"{prefix}\033[1m{display}\033[0m{marker}\n")
-
-    if bottom < len(ids):
-        remaining = len(ids) - bottom
-        sys.stdout.write(f"  \033[90m\u25bc {remaining} more below\033[0m\n")
-    else:
-        sys.stdout.write("\n")
-
-    sys.stdout.write(f"\033[90m[{sel + 1}/{len(ids)}]\033[0m")
-    sys.stdout.flush()
+        while True:
+            _render_boxed_picker("Model Picker", f"Select a model ({len(ids)} available)", options, sel, current_model)
+            
+            if _IS_UNIX:
+                ch = os.read(fd, 1)
+            else:
+                ch = msvcrt.getch()
+                
+            if ch in (b"\r", b"\n"):
+                if sel == len(options) - 1: # Cancel
+                    sys.stdout.write("\x1b[2J\x1b[H\x1b[?25h")
+                    sys.stdout.flush()
+                    return None
+                sys.stdout.write("\x1b[2J\x1b[H\x1b[?25h")
+                sys.stdout.flush()
+                return ids[sel]
+            if ch == b"\x03" or ch == b"q" or (ch == b"\x1b" and not _IS_UNIX):
+                sys.stdout.write("\x1b[2J\x1b[H\x1b[?25h")
+                sys.stdout.flush()
+                return None
+            if ch == b"\x1b" and _IS_UNIX:
+                import select
+                r, _, _ = select.select([fd], [], [], 0.05)
+                if r:
+                    seq = os.read(fd, 2)
+                    if seq == b"[A":
+                        sel = (sel - 1) % len(options)
+                    elif seq == b"[B":
+                        sel = (sel + 1) % len(options)
+            elif ch == b"\xe0" and not _IS_UNIX:
+                next_ch = msvcrt.getch()
+                if next_ch == b"H":
+                    sel = (sel - 1) % len(options)
+                elif next_ch == b"P":
+                    sel = (sel + 1) % len(options)
+    finally:
+        if _IS_UNIX and old is not None:
+            termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
 # ── Main Session Execution Loop ──────────────────────────────────────────────
