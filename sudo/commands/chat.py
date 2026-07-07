@@ -174,12 +174,66 @@ def stream_filter_think_tags(stream: Generator[str, None, None]) -> Generator[st
         yield buf
 
 
+ENGINEERING_CONSTITUTION = """
+# Sudo Engineering Constitution
+
+## Identity
+
+You are Sudo — an autonomous software engineer responsible for the long-term health of every project you touch.
+
+Your mission is to build software that is: Correct, Reliable, Maintainable, Testable, Secure, Well-documented, and Easy to extend.
+
+Optimize for engineering excellence rather than immediate output. Never optimize for appearing intelligent. Always optimize for producing the best possible engineering outcome.
+
+## Primary Objective
+
+Every task should leave the project in a better state than before. Not simply "working." Better.
+
+## Core Principles
+
+- Think before acting.
+- Read before modifying.
+- Understand before implementing.
+- Verify before claiming success.
+- Review before finishing.
+- Never guess — if uncertain, investigate or ask.
+
+## Execution Lifecycle
+
+1. **Read & Understand**: Always read existing code before modifying. Understand the intent, not just the syntax.
+2. **Root Cause, Not Symptoms**: Fix root causes. Never patch symptoms.
+3. **Plan Explicitly**: State what you will change and why before acting on multi-step tasks.
+4. **Minimal Footprint**: Make the smallest change that solves the problem correctly.
+5. **Preserve Contracts**: Do not break existing interfaces, APIs, or behaviors unless explicitly required.
+6. **Test Your Work**: After any change, verify correctness — run tests, inspect outputs, check edge cases.
+7. **Document Changes**: Update comments, docstrings, and relevant documentation.
+8. **Reflect**: After completing a task, identify what could be improved further and note it.
+
+## Code Quality Standards
+
+- Prefer clarity over cleverness.
+- Functions should do one thing. Keep them small.
+- Variable names should be unambiguous.
+- Error handling must be explicit — never silently swallow exceptions without reason.
+- Log meaningful context, not noise.
+- Security first: sanitize inputs, never hardcode secrets, validate all external data.
+
+## Telegram Integration
+
+When the user asks to send something to Telegram (e.g., "show me this file via telegram", "message me the result", "send me X"), use the `telegram_send` tool to deliver the content directly to their Telegram chat. You may chain `read_file` → `telegram_send` to fulfill file-reading requests over Telegram.
+
+## Autonomous Decision Making
+
+You may take initiative when you identify clear improvements within the task scope. You must NOT take destructive or irreversible actions (deleting data, removing files, force-pushing) without explicit user confirmation. When in doubt: ask first.
+"""
+
 SYSTEM_PROMPT = (
-    "You are SUDO, an autonomous AI coding assistant running in Android Termux.\n\n"
+    "You are SUDO, an autonomous AI coding assistant and software engineer.\n\n"
     "CRITICAL CONSTRAINTS:\n"
     "- Be direct, professional, and clear. Avoid excessive greetings or unnecessary filler, but respond naturally and helpfully to the user.\n"
     "- You can explain what you are about to do before calling a tool, and explain what you did after a tool runs.\n"
-    "- If the user says hello or hi, greet them back professionally and ask how you can assist them.\n\n"
+    "- If the user says hello or hi, greet them back professionally and ask how you can assist them.\n"
+    "- When the user asks to 'message me', 'send via telegram', 'show me on telegram', or 'notify me', use the telegram_send tool.\n\n"
     "To interact with the environment, use the tool calls described below. If you do not need to run a tool to address the user's input (e.g., for greetings, general questions, or chat), respond with a direct text answer instead of calling a tool.\n"
     "Do NOT combine multiple tool calls in a single turn. Only call one tool at a time, wait for the tool output, then decide the next action.\n\n"
     "Use XML tags to call tools:\n"
@@ -1249,6 +1303,7 @@ _COMMANDS = {
     "/clear":     "Clear conversation history",
     "/sessions":  "Manage sessions",
     "/skills":    "Manage assistant behavior skills",
+    "/telegram":  "Send Telegram message or check status",
     "/usage":     "Show token usage and cost",
     "/paste":     "Attach an image/video",
     "/save":      "Save conversation to file",
@@ -1263,6 +1318,7 @@ _COMMANDS = {
     "/exit":      "Exit chat",
     "/quit":      "Exit chat (alias for /exit)",
 }
+
 
 
 def _clear_dropdown_display(buf: str, cmds: list[str]) -> None:
@@ -1486,7 +1542,10 @@ def sync_gcs_at_startup(cfg: Config) -> None:
 
 def rebuild_system_instructions(messages: list[dict], cfg: Config, active_skill_prompt: Optional[str] = None) -> None:
     prompt = SYSTEM_PROMPT
+    # Inject the Engineering Constitution so every session is governed by it
+    prompt += "\n\n" + ENGINEERING_CONSTITUTION.strip()
     prompt += "\n\nPersistent Memory Instructions:\nWhenever you learn a new user preference, style detail, technical rule, or key lesson from this conversation, output it wrapped in `<memory>...</memory>` tags (e.g. `<memory>User prefers snake_case for test names</memory>`). These will be saved automatically to improve your work over time."
+
     if cfg.personality:
         prompt += f"\n\nPersonality / Custom Instructions:\n{cfg.personality}"
     from sudo.core.memory import load_memories
@@ -1770,10 +1829,12 @@ def run_chat(args) -> int:
                     print("  /redraw          Force a full UI repaint (recovers from terminal drift)")
                     print("  /branch [name]   Branch the current session (explore a different path)")
                     print("  /fork            Branch the current session (alias for /branch)")
+                    print("  /telegram [msg]  Send a Telegram message (or /telegram status/test)")
                     print("  /help            Show this message")
                     print("  /exit, /quit     Exit chat")
                     print()
                     continue
+
                 elif cmd == "/sessions":
                     active_session_id, messages = handle_sessions_cmd(
                         cmd_arg, session_data, sm, current_messages=messages
@@ -2313,6 +2374,55 @@ def run_chat(args) -> int:
                     print("  /gcs-config bucket <bucket_name>")
                     print("  /gcs-config keyfile <path_to_service_account_key.json>")
                     print()
+                    continue
+                elif cmd == "/telegram":
+                    from sudo.core.telegram import send_telegram_message
+                    parts = cmd_arg.split(None, 1) if cmd_arg else []
+                    sub = parts[0].lower() if parts else ""
+                    sub_val = parts[1].strip() if len(parts) > 1 else ""
+
+                    if sub == "send":
+                        if not sub_val:
+                            print("\033[31mUsage: /telegram send <message>\033[0m\n")
+                            continue
+                        cfg = load()
+                        if not cfg.telegram_enabled or not cfg.telegram_token or not cfg.telegram_chat_id:
+                            print("\033[31mTelegram not configured. Run: /config telegram\033[0m\n")
+                            continue
+                        send_telegram_message(cfg, sub_val)
+                        print(f"\033[32m📤 Sent to Telegram: {sub_val[:60]}{'...' if len(sub_val) > 60 else ''}\033[0m\n")
+                    elif sub == "test":
+                        cfg = load()
+                        if not cfg.telegram_enabled or not cfg.telegram_token or not cfg.telegram_chat_id:
+                            print("\033[31mTelegram not configured. Use /config to set telegram_token and telegram_chat_id.\033[0m\n")
+                            continue
+                        send_telegram_message(cfg, "✅ Sudo test message: Telegram is working correctly.")
+                        print("\033[32m📤 Test message sent to Telegram.\033[0m\n")
+                    elif sub == "status":
+                        cfg = load()
+                        enabled_str = "\033[32mEnabled\033[0m" if cfg.telegram_enabled else "\033[31mDisabled\033[0m"
+                        token_str = f"{cfg.telegram_token[:8]}..." if cfg.telegram_token else "(not set)"
+                        print(f"\n\033[1mTelegram Status:\033[0m")
+                        print(f"  Enabled:  {enabled_str}")
+                        print(f"  Token:    {token_str}")
+                        print(f"  Chat ID:  {cfg.telegram_chat_id or '(not set)'}")
+                        print()
+                    else:
+                        # No sub-command: if there's text, treat it as a direct send
+                        if cmd_arg:
+                            cfg = load()
+                            if not cfg.telegram_enabled or not cfg.telegram_token or not cfg.telegram_chat_id:
+                                print("\033[31mTelegram not configured. Use /telegram status for details.\033[0m\n")
+                                continue
+                            send_telegram_message(cfg, cmd_arg)
+                            print(f"\033[32m📤 Sent to Telegram: {cmd_arg[:60]}{'...' if len(cmd_arg) > 60 else ''}\033[0m\n")
+                        else:
+                            print("\n\033[1mTelegram Commands:\033[0m")
+                            print("  /telegram send <message>    Send a message to your Telegram chat")
+                            print("  /telegram <message>         Shorthand: send a message directly")
+                            print("  /telegram test              Send a test message to verify setup")
+                            print("  /telegram status            Show Telegram configuration status")
+                            print()
                     continue
                 else:
                     from sudo.core.skills import load_skills

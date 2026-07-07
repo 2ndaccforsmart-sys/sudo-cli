@@ -236,6 +236,21 @@ def _handle_github_push(commit_message: str, branch: str = "main") -> str:
         return f"[Tool Error performing github_push: {e}]"
 
 
+def _handle_telegram_send(message: str) -> str:
+    """Send a message to the user via Telegram."""
+    try:
+        from sudo.core.config import load as _load_cfg
+        from sudo.core.telegram import send_telegram_message
+        cfg = _load_cfg()
+        if not cfg.telegram_enabled or not cfg.telegram_token or not cfg.telegram_chat_id:
+            return "[Tool Error: Telegram is not configured or not enabled. Use /config telegram to set it up.]"
+        send_telegram_message(cfg, message)
+        preview = message[:80] + "..." if len(message) > 80 else message
+        return f"[Tool Output — telegram_send]: Message sent to Telegram: {preview}"
+    except Exception as e:
+        return f"[Tool Error sending Telegram message: {e}]"
+
+
 def _handle_write_file(path: str, content: str) -> str:
     try:
         abs_path = os.path.abspath(path)
@@ -461,6 +476,19 @@ register_tool(ToolSpec(
 ))
 
 register_tool(ToolSpec(
+    name="telegram_send",
+    description=(
+        "Send a message to the user via their configured Telegram bot. Use this whenever the user asks to be notified, "
+        "or when they want file contents, summaries, results, or any other information delivered to Telegram. "
+        "Always send a final notification when a long task completes if the user asked for it."
+    ),
+    parameters={
+        "message": _param("string", "The text message to send to the user on Telegram", required=True),
+    },
+    handler=_handle_telegram_send,
+))
+
+register_tool(ToolSpec(
     name="github_push",
     description="Automatically run git add, commit, and push to GitHub repository.",
     parameters={
@@ -504,6 +532,7 @@ def parse_tool_calls(text: str) -> list[dict[str, Any]]:
         "save_skill": (r'<tool:save_skill\s+name=["\'](.*?)["\']\s+description=["\'](.*?)["\']\s*>(.*?)</tool:save_skill>', ["name", "description", "system_prompt"]),
         "browse": (r'<tool:browse\s+url=["\'](.*?)["\']\s*/>', ["url"]),
         "github_push": (r'<tool:github_push\s+commit_message=["\'](.*?)["\'](?:\s+branch=["\'](.*?)["\'])?\s*/>', ["commit_message", "branch"]),
+        "telegram_send": (r'<tool:telegram_send\s+message=["\'](.*?)["\']\s*/>', ["message"]),
     }
 
     for name, (pattern, arg_names) in xml_handlers.items():
