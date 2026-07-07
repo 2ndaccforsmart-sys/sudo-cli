@@ -422,7 +422,31 @@ def parse_usage(response: dict, api_type: str) -> tuple[int, int]:
     return p_tok, c_tok
 
 
+_status_bar_printed = False
+
+
+def clear_previous_status_bar(user_input: str) -> None:
+    global _status_bar_printed
+    if not _status_bar_printed:
+        return
+    _status_bar_printed = False
+    
+    tw = terminal_width()
+    u_lines = 0
+    for line in user_input.splitlines():
+        prompt_len = len(line) if u_lines > 0 else len("> " + line)
+        u_lines += max(1, (prompt_len + tw - 1) // tw)
+    u_lines = max(1, u_lines)
+    
+    move_up = u_lines + 3
+    sys.stdout.write(f"\x1b[{move_up}A")
+    sys.stdout.write("\x1b[3M")
+    sys.stdout.write(f"\x1b[{u_lines}B")
+    sys.stdout.flush()
+
+
 def print_status_bar(model: str, messages: list[dict], last_response_time: float, start_time: float) -> None:
+    global _status_bar_printed
     tw = terminal_width()
 
     total_chars = sum(len(m["content"]) for m in messages if m.get("role") != "system")
@@ -496,6 +520,7 @@ def print_status_bar(model: str, messages: list[dict], last_response_time: float
     print("\033[38;5;208m" + "─" * tw + "\033[0m")
     print(colored_status)
     print("\033[38;5;208m" + "─" * tw + "\033[0m")
+    _status_bar_printed = True
 
 
 def check_and_run_setup() -> bool:
@@ -1583,6 +1608,7 @@ def run_chat(args) -> int:
                 user_msg["attachments"] = list(current_attachments)
                 current_attachments.clear()
             messages.append(user_msg)
+            clear_previous_status_bar(user_input)
             
             response_start = time.time()
             max_turns = 10
