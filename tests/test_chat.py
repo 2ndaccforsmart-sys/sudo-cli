@@ -202,7 +202,7 @@ class TestStreamFilterThinkTags:
 class TestDropdown:
     @patch("sys.stdout.write")
     def test_draw_cmd_dropdown(self, mock_write):
-        _draw_cmd_dropdown("/ne", ["/new"], 0)
+        _draw_cmd_dropdown("/ne", ["/new"], 0, {"/new": "Start a new session"})
         written = "".join(call.args[0] for call in mock_write.call_args_list)
         assert "> /ne" in written
         assert "/new" in written

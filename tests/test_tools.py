@@ -213,3 +213,35 @@ def test_execute_gcs_make_directory(mock_get_client):
     result = execute_tool("gcs_make_directory", {"path": "folder"})
     assert "successfully created in GCS" in result
     mock_client._bucket.blob.assert_called_with("folder/")
+
+
+def test_save_skill_tool_registered():
+    assert "save_skill" in TOOL_REGISTRY
+
+
+def test_parse_legacy_save_skill_xml():
+    text = '<tool:save_skill name="test_skill" description="my test skill">do some magic</tool:save_skill>'
+    calls = parse_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0]["name"] == "save_skill"
+    assert calls[0]["arguments"]["name"] == "test_skill"
+    assert calls[0]["arguments"]["description"] == "my test skill"
+    assert calls[0]["arguments"]["system_prompt"] == "do some magic"
+
+
+def test_execute_save_skill(tmp_path):
+    test_file = tmp_path / "skills.json"
+    with patch("sudo.core.skills.SKILLS_FILE", test_file):
+        result = execute_tool("save_skill", {
+            "name": "refactor",
+            "description": "Refactor code",
+            "system_prompt": "Refactor python code format"
+        })
+        assert "successfully saved" in result
+        
+        # Verify it got saved
+        from sudo.core.skills import load_skills
+        skills = load_skills()
+        assert "refactor" in skills
+        assert skills["refactor"]["description"] == "Refactor code"
+

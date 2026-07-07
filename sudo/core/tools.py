@@ -147,6 +147,15 @@ def _handle_gcs_make_directory(path: str) -> str:
     except Exception as e:
         return f"[Tool Error: {e}]"
 
+
+def _handle_save_skill(name: str, description: str, system_prompt: str) -> str:
+    try:
+        from sudo.core.skills import add_skill
+        add_skill(name, description, system_prompt)
+        return f"[Tool Output: Skill '{name}' successfully saved! Users can now use it via '/{name} <prompt>']"
+    except Exception as e:
+        return f"[Tool Error: {e}]"
+
 def _handle_read_file(path: str) -> str:
     abs_path = os.path.abspath(path)
     if not os.path.exists(abs_path):
@@ -345,6 +354,17 @@ register_tool(ToolSpec(
     handler=_handle_gcs_make_directory,
 ))
 
+register_tool(ToolSpec(
+    name="save_skill",
+    description="Save a new custom skill (behavior/system prompt) for the assistant. The skill will be available as a slash command in the chat.",
+    parameters={
+        "name": _param("string", "Name of the skill (alphanumeric, e.g. 'refactor')", required=True),
+        "description": _param("string", "Brief description of what the skill does", required=True),
+        "system_prompt": _param("string", "The detailed system prompt/instructions that define the assistant's behavior when this skill is active", required=True),
+    },
+    handler=_handle_save_skill,
+))
+
 
 # ── Tool Call Parsing (backward-compatible XML + JSON for future use) ─────────
 
@@ -375,6 +395,7 @@ def parse_tool_calls(text: str) -> list[dict[str, Any]]:
         "gcs_write_file": (r'<tool:gcs_write_file\s+path=["\'](.*?)["\']\s*>(.*?)</tool:gcs_write_file>', ["path", "content"]),
         "gcs_delete_file": (r'<tool:gcs_delete_file\s+path=["\'](.*?)["\']\s*/>', ["path"]),
         "gcs_make_directory": (r'<tool:gcs_make_directory\s+path=["\'](.*?)["\']\s*/>', ["path"]),
+        "save_skill": (r'<tool:save_skill\s+name=["\'](.*?)["\']\s+description=["\'](.*?)["\']\s*>(.*?)</tool:save_skill>', ["name", "description", "system_prompt"]),
     }
 
     for name, (pattern, arg_names) in xml_handlers.items():

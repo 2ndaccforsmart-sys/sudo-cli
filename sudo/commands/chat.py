@@ -1153,6 +1153,7 @@ _COMMANDS = {
     "/reset":     "Start a new session (alias for /new)",
     "/clear":     "Clear conversation history",
     "/sessions":  "Manage sessions",
+    "/skills":    "Manage assistant behavior skills",
     "/usage":     "Show token usage and cost",
     "/paste":     "Attach an image/video",
     "/save":      "Save conversation to file",
@@ -1191,10 +1192,16 @@ def _pick_command_dropdown(prefix: str = "/") -> str | None:
     buf = prefix
     
     try:
+        from sudo.core.skills import load_skills
+        skills = load_skills()
+        all_cmds = dict(_COMMANDS)
+        for sname, sinfo in skills.items():
+            all_cmds[f"/{sname}"] = sinfo["description"]
+            
         while True:
-            cmds = [c for c in _COMMANDS if c.startswith(buf)]
+            cmds = [c for c in all_cmds if c.startswith(buf)]
             sel = min(sel, max(0, len(cmds) - 1))
-            _draw_cmd_dropdown(buf, cmds, sel)
+            _draw_cmd_dropdown(buf, cmds, sel, all_cmds)
             
             if _IS_UNIX:
                 ch = os.read(fd, 1)
@@ -1264,41 +1271,27 @@ def _pick_command_dropdown(prefix: str = "/") -> str | None:
             termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
-def _draw_cmd_dropdown(buf: str, cmds: list[str], sel: int) -> None:
+def _draw_cmd_dropdown(buf: str, cmds: list[str], sel: int, all_cmds: dict[str, str]) -> None:
     """Render the command dropdown in-place below the prompt."""
-    # Hide cursor
     sys.stdout.write("\x1b[?25l")
-    
-    # Move to start of line, clear everything below
     sys.stdout.write("\r\x1b[J")
-    
-    # Print prompt and buffer
     sys.stdout.write(f"> {buf}")
     
-    # Draw dropdown options below the prompt
     N = len(cmds)
     if N > 0:
         max_cmd_len = max(len(c) for c in cmds)
         for i, cmd in enumerate(cmds):
             sys.stdout.write("\n")
-            desc = _COMMANDS.get(cmd, "")
-            
-            # Pad command for description alignment
+            desc = all_cmds.get(cmd, "")
             padded_cmd = cmd.ljust(max_cmd_len + 4)
             
             if i == sel:
-                # Highlight active command (blue/dark gray background or reverse video)
                 sys.stdout.write(f"\033[48;5;238m\033[38;5;255m {padded_cmd}{desc} \033[0m")
             else:
-                # Normal command display
                 sys.stdout.write(f"\033[38;5;255m{padded_cmd}\033[38;5;244m{desc}\033[0m")
-        
-        # Move cursor back up to the prompt line
         sys.stdout.write(f"\x1b[{N}A")
         
-    # Position cursor at the end of the search buffer
     sys.stdout.write(f"\r\x1b[{len('> ') + len(buf)}C")
-    # Show cursor
     sys.stdout.write("\x1b[?25h")
     sys.stdout.flush()
 
@@ -1788,9 +1781,53 @@ def run_chat(args) -> int:
                     except Exception as e:
                         print(f"\033[31mError connecting to '{target_provider}': {e}\033[0m\n")
                     continue
-                else:
-                    print(f"\033[31mUnknown command: {cmd}\033[0m\n")
+                elif cmd == "/skills":
+                    from sudo.core.skills import load_skills, delete_skill, DEFAULT_SKILLS
+                    parts = cmd_arg.split(None, 1)
+                    sub = parts[0].lower() if parts else ""
+                    sub_arg = parts[1].strip() if len(parts) > 1 else ""
+                    
+                    if sub == "delete":
+                        if not sub_arg:
+                            print("\033[31mError: Specify skill name to delete.\033[0m\n")
+                            continue
+                        if delete_skill(sub_arg):
+                            print(f"\033[32mSkill '{sub_arg}' successfully deleted.\033[0m\n")
+                        else:
+                            print(f"\033[31mError: Skill '{sub_arg}' not found or is a built-in skill.\033[0m\n")
+                        continue
+                    
+                    skills = load_skills()
+                    print("\n\033[1mAvailable Skills:\033[0m")
+                    for name, info in skills.items():
+                        is_builtin = " (built-in)" if name in DEFAULT_SKILLS else ""
+                        print(f"  \033[1;36m/{name}\033[0m{is_builtin} — {info['description']}")
+                    print("\nUsage:")
+                    print("  /<skill_name> <prompt>   Run prompt using the skill's system instructions")
+                    print("  /skills delete <name>    Delete a custom skill")
+                    print()
                     continue
+                else:
+                    from sudo.core.skills import load_skills
+                    skills = load_skills()
+                    skill_name = cmd[1:]
+                    if skill_name in skills:
+                        if not cmd_arg:
+                            print(f"Usage: {cmd} <your prompt>\n")
+                            continue
+                        
+                        skill = skills[skill_name]
+                        print(f"\033[36mRunning skill \033[1m{skill_name}\033[0m: {skill['description']}...\033[0m")
+                        
+                        if messages and messages[0].get("role") == "system":
+                            messages[0]["content"] = skill["system_prompt"]
+                        else:
+                            messages.insert(0, {"role": "system", "content": skill["system_prompt"]})
+                            
+                        user_input = cmd_arg
+                    else:
+                        print(f"\033[31mUnknown command: {cmd}\033[0m\n")
+                        continue
             
             # Scrape prompt text for any file paths ending in popular image/video extensions
             detected_paths = re.findall(r'(?:[a-zA-Z]:[\\/]|[\\/])?[\w\-.\\/]+\.(?:png|jpe?g|webp|gif|mp4|mov|avi|mkv)', user_input)
