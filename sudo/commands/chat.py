@@ -1194,7 +1194,10 @@ def run_chat(args) -> int:
                     close_idx = _tag_buf.find("</think>")
                     if close_idx != -1:
                         _in_think = False
+                        after = _tag_buf[close_idx + len("</think>"):]
                         _tag_buf = ""
+                        if after and not quiet:
+                            print(after, end="", flush=True)
                 else:
                     open_idx = chunk.find("<think>")
                     if open_idx != -1:
@@ -1577,7 +1580,10 @@ def run_chat(args) -> int:
                             close_idx = _tag_buf.find("</think>")
                             if close_idx != -1:
                                 _in_think = False
+                                after = _tag_buf[close_idx + len("</think>"):]
                                 _tag_buf = ""
+                                if after:
+                                    print(after, end="", flush=True)
                         else:
                             # Outside think — look for opening tag
                             open_idx = chunk.find("<think>")
