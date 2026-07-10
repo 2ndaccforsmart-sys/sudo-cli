@@ -240,6 +240,7 @@ SYSTEM_PROMPT = (
         "  <tool:run_command cmd=\"ls -la\"/>\\n"
         "  <tool:read_file path=\"main.py\"/>\\n"
         "  <tool:write_file path=\"out.txt\">content</tool:write_file>\\n\\n"
+        "IMPORTANT: Tool names MUST be prefixed with 'tool:' (e.g., <tool:run_command .../>, NOT <run_command .../>).\\n\\n"
         + tools.get_system_prompt_tools() + "\\n\\n"
         "When you run a tool, the output of the tool will be provided to you in the next turn."
 )
