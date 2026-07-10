@@ -236,9 +236,12 @@ SYSTEM_PROMPT = (
     "- When the user asks to 'message me', 'send via telegram', 'show me on telegram', or 'notify me', use the telegram_send tool.\n\n"
     "To interact with the environment, use the tool calls described below. If you do not need to run a tool to address the user's input (e.g., for greetings, general questions, or chat), respond with a direct text answer instead of calling a tool.\n"
     "Do NOT combine multiple tool calls in a single turn. Only call one tool at a time, wait for the tool output, then decide the next action.\n\n"
-    "Use XML tags to call tools:\n"
-    + tools.get_system_prompt_tools() + "\n\n"
-    "When you run a tool, the output of the tool will be provided to you in the next turn."
+    "Use XML tags to call tools. Example:\\n"
+        "  <tool:run_command cmd=\"ls -la\"/>\\n"
+        "  <tool:read_file path=\"main.py\"/>\\n"
+        "  <tool:write_file path=\"out.txt\">content</tool:write_file>\\n\\n"
+        + tools.get_system_prompt_tools() + "\\n\\n"
+        "When you run a tool, the output of the tool will be provided to you in the next turn."
 )
 
 
