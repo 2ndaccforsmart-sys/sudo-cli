@@ -87,9 +87,11 @@ Types: `feat`, `fix`, `refactor`, `perf`, `security`, `test`, `docs`, `chore`
 ---
 
 ## Current Status
-- **Last Verified Commit:** `280546a05fea93b5fe3363a2a6a6242494725385`
-- **Tests:** 179 passing
-- **Streaming:** Not implemented (P0)
-- **Encrypted Config:** Not implemented (P0)
-- **Sentinel Config:** Hardcoded paths (P0)
+- **Last Verified Commit:** `235bafa` (HEAD)
+- **Tests:** 211 passing (1 pre-existing MCP failure)
+- **Streaming:** ✅ Implemented (OpenAI/Anthropic/Gemini)
+- **Encrypted Config:** ✅ Fernet + PBKDF2
+- **Sentinel Config:** ✅ Configurable via sentinel.json
 - **Agent Loop:** Not implemented (P1)
+- **Token Counter:** ✅ tiktoken with context management
+- **list_dir tool:** ✅ Enabled with sentinel security
