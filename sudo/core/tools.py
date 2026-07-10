@@ -366,7 +366,47 @@ def _handle_run_command(cmd: str, timeout: int = 60) -> str:
 
 
 def _handle_list_dir(path: str) -> str:
-    return "[Tool Error: list_dir is disabled by user security policy]"
+    """List files and directories in a path with sentinel security checks."""
+    try:
+        from sudo.core.sync.sentinel import validate_path, PathBoundaryViolation, PathBlacklistViolation
+        from pathlib import Path
+        
+        # Validate path through sentinel
+        resolved = validate_path(path)
+        
+        if not resolved.is_dir():
+            return f"[Tool Error: '{path}' is not a directory]"
+        
+        items = []
+        for item in sorted(resolved.iterdir()):
+            if item.name.startswith('.'):
+                continue
+            try:
+                stat = item.stat()
+                size = stat.st_size
+                mtime = stat.st_mtime
+                from datetime import datetime
+                mtime_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M')
+                if item.is_dir():
+                    items.append(f"  📁 {item.name}/")
+                else:
+                    size_kb = size / 1024
+                    if size_kb >= 1024:
+                        size_str = f"{size_kb/1024:.1f} MB"
+                    else:
+                        size_str = f"{size_kb:.1f} KB"
+                    items.append(f"  📄 {item.name} ({size_str}, {mtime_str})")
+            except (OSError, PermissionError):
+                items.append(f"  ❓ {item.name} (permission denied)")
+        
+        if not items:
+            return f"[Tool Output — list_dir {path}]: (empty directory)"
+        
+        return f"[Tool Output — list_dir {path}]:\n" + "\n".join(items)
+    except (PathBoundaryViolation, PathBlacklistViolation) as e:
+        return f"[Tool Error: {e}]"
+    except Exception as e:
+        return f"[Tool Error listing directory: {e}]"
 
 
 # ── Register Tools ───────────────────────────────────────────────────────
@@ -411,12 +451,12 @@ register_tool(ToolSpec(
 
 register_tool(ToolSpec(
     name="list_dir",
-    description="List files and directories in a path. DISABLED for security.",
+    description="List files and directories in a path. Respects security boundaries.",
     parameters={
         "path": _param("string", "Path to list", required=True),
     },
     handler=_handle_list_dir,
-    disabled=True,
+    disabled=False,
 ))
 
 register_tool(ToolSpec(

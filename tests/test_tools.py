@@ -36,9 +36,10 @@ def test_tool_schemas_are_valid():
         assert "properties" in func["parameters"]
 
 
-def test_list_dir_is_disabled():
+def test_list_dir_is_enabled():
     spec = TOOL_REGISTRY["list_dir"]
-    assert spec.disabled is True
+    assert spec.disabled is False
+    assert "security boundaries" in spec.description.lower()
 
 
 def test_execute_unknown_tool():

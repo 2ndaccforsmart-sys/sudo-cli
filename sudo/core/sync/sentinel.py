@@ -34,24 +34,45 @@ class PathBlacklistViolation(Exception):
 
 # ── Hardcoded Boundaries ────────────────────────────────────────────────────
 
-# Only these root paths are permitted
-ALLOWED_ROOTS: list[str] = [
+# Config file path
+SENTINEL_CONFIG_FILE = Path.home() / ".config" / "sudo" / "sync" / "sentinel.json"
+
+# Default boundaries (used if config file doesn't exist)
+DEFAULT_ALLOWED_ROOTS: list[str] = [
     "E:\\",
     "D:\\Daksh",
 ]
 
-# These directories under D:/Daksh are completely forbidden
-BLACKLISTED_DIRS: list[str] = [
+DEFAULT_BLACKLISTED_DIRS: list[str] = [
     "D:\\Daksh\\Coding",
     "D:\\Daksh\\Software",
     "D:\\Daksh\\Studying",
 ]
 
-# These substrings in ANY path component trigger an immediate block
-BLACKLISTED_KEYWORDS: list[str] = [
+DEFAULT_BLACKLISTED_KEYWORDS: list[str] = [
     "jarvis",
     "control center",
 ]
+
+
+def _load_sentinel_config() -> dict:
+    """Load sentinel config from file, return defaults if not found."""
+    if SENTINEL_CONFIG_FILE.exists():
+        try:
+            import json
+            return json.loads(SENTINEL_CONFIG_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+# Load config at module import
+_config = _load_sentinel_config()
+
+# These are the active boundaries (configurable via sentinel.json)
+ALLOWED_ROOTS: list[str] = _config.get("allowed_roots", DEFAULT_ALLOWED_ROOTS)
+BLACKLISTED_DIRS: list[str] = _config.get("blacklisted_dirs", DEFAULT_BLACKLISTED_DIRS)
+BLACKLISTED_KEYWORDS: list[str] = _config.get("blacklisted_keywords", DEFAULT_BLACKLISTED_KEYWORDS)
 
 # Default excluded directories for all sync operations (cannot be overridden)
 HARDCODED_EXCLUSIONS: set[str] = {

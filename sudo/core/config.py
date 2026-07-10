@@ -16,6 +16,12 @@ try:
 except ImportError:
     yaml = None
 
+from sudo.core.encrypted_config import (
+    load_encrypted_config,
+    save_encrypted_config,
+    is_encrypted,
+)
+
 CONFIG_FILE = Path.home() / "sudo-config.json"
 STATE_DIR_BASE = Path.home() / ".config" / "sudo" / "state"
 
@@ -99,7 +105,7 @@ def migrate_old_config():
     old_dir = Path.home() / ".config" / "sudo"
     if CONFIG_FILE.exists():
         return
-        
+       
     if old_dir.exists():
         import json
         
@@ -143,7 +149,7 @@ def migrate_old_config():
                         data[k] = v
             except Exception:
                 pass
-                
+               
         old_mcp = old_dir / "mcp.json"
         if old_mcp.exists():
             try:
@@ -151,7 +157,7 @@ def migrate_old_config():
                 data["mcp_servers"] = raw.get("mcpServers", {})
             except Exception:
                 pass
-                
+               
         old_skills = old_dir / "skills.json"
         if old_skills.exists():
             try:
@@ -159,7 +165,7 @@ def migrate_old_config():
                 data["skills"] = raw
             except Exception:
                 pass
-                
+               
         old_mem = old_dir / "memory.json"
         if old_mem.exists():
             try:
@@ -167,13 +173,21 @@ def migrate_old_config():
                 data["memories"] = raw
             except Exception:
                 pass
-                
+               
         CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
 
 def load() -> Config:
-    """Load config from ~/sudo-config.json, with backward-compatible migration."""
+    """Load config from encrypted storage, fallback to plaintext."""
     migrate_old_config()
+    
+    # Try encrypted config first
+    if is_encrypted():
+        encrypted_cfg = load_encrypted_config()
+        if encrypted_cfg:
+            return _parse(encrypted_cfg)
+    
+    # Fallback to plaintext
     if not CONFIG_FILE.exists():
         return Config()
     try:
@@ -206,8 +220,9 @@ def _parse(raw: dict) -> Config:
 
 
 def save(cfg: Config) -> None:
-    """Persist config to ~/sudo-config.json."""
-    data = {
+    """Persist config to encrypted storage."""
+    # Convert Config to dict for encryption
+    config_dict = {
         "provider": cfg.provider,
         "api_key": cfg.api_key,
         "model": cfg.model,
@@ -221,6 +236,29 @@ def save(cfg: Config) -> None:
         "gcs_key_file": cfg.gcs_key_file,
         "mcp_servers": cfg.mcp_servers,
         "telegram_token": cfg.telegram_token,
+        "telegram_chat_id": cfg.telegram_chat_id,
+        "telegram_enabled": cfg.telegram_enabled,
+        "skills": cfg.skills,
+        "memories": cfg.memories,
+    }
+    save_encrypted_config(config_dict)
+    
+    # Also save plaintext for backward compatibility (without sensitive keys)
+    data = {
+        "provider": cfg.provider,
+        "api_key": None,  # Don't save API keys in plaintext
+        "model": cfg.model,
+        "base_url": cfg.base_url,
+        "extra_providers": [{"name": ep.get("name"), "model": ep.get("model"), "base_url": ep.get("base_url")} 
+                          for ep in cfg.extra_providers],
+        "personality": cfg.personality,
+        "always_on_skills": cfg.always_on_skills,
+        "show_reasoning": cfg.show_reasoning,
+        "yolo_mode": cfg.yolo_mode,
+        "gcs_bucket": cfg.gcs_bucket,
+        "gcs_key_file": cfg.gcs_key_file,
+        "mcp_servers": cfg.mcp_servers,
+        "telegram_token": None,
         "telegram_chat_id": cfg.telegram_chat_id,
         "telegram_enabled": cfg.telegram_enabled,
         "skills": cfg.skills,

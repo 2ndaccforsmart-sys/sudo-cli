@@ -1,0 +1,5 @@
+{
+  "allowed_roots": ["E:\\", "D:\\Daksh"],
+  "blacklisted_dirs": ["D:\\Daksh\\Coding", "D:\\Daksh\\Software", "D:\\Daksh\\Studying"],
+  "blacklisted_keywords": ["jarvis", "control center"]
+}

@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Generator, Optional
 
 
 @dataclass
@@ -464,6 +464,10 @@ class BaseProvider(ABC):
         ...
 
     @abstractmethod
+    def stream_chat(self, messages: list[dict], **kwargs) -> Generator[str, None, None]:
+        ...
+
+    @abstractmethod
     def list_models(self) -> list[dict[str, Any]]:
         ...
 
@@ -499,6 +503,42 @@ class OpenAICompatibleProvider(BaseProvider):
     def chat(self, messages: list[dict], **kwargs) -> dict[str, Any]:
         body = {"model": self.model, "messages": messages, **kwargs}
         return self._request("POST", "/v1/chat/completions", json_body=body)
+
+    def stream_chat(self, messages: list[dict], **kwargs) -> Generator[str, None, None]:
+        import httpx
+        import json
+        
+        body = {"model": self.model, "messages": messages, "stream": True, "stream_options": {"include_usage": True}, **kwargs}
+        base = self.base_url.rstrip('/')
+        url = f"{base}/chat/completions"
+        if base.endswith('/v1'):
+            pass
+        else:
+            url = f"{base}/v1/chat/completions"
+        
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        with httpx.stream("POST", url, headers=headers, json=body, timeout=60) as resp:
+            resp.raise_for_status()
+            for line in resp.iter_lines():
+                if not line.strip():
+                    continue
+                if line.startswith("data: "):
+                    data_str = line[6:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(data_str)
+                        choices = data.get("choices", [])
+                        if choices:
+                            delta = choices[0].get("delta", {})
+                            content = delta.get("content", "")
+                            if content:
+                                yield content
+                    except Exception:
+                        pass
 
     def list_models(self) -> list[dict[str, Any]]:
         data = self._request("GET", "/v1/models")
@@ -543,6 +583,51 @@ class AnthropicProvider(BaseProvider):
         body.pop("max_completion_tokens", None)
         return self._request(body)
 
+    def stream_chat(self, messages: list[dict], **kwargs) -> Generator[str, None, None]:
+        import httpx
+        import json
+        
+        system_msg = None
+        anthropic_messages = []
+        for m in messages:
+            if m["role"] == "system":
+                system_msg = m["content"]
+                continue
+            anthropic_messages.append({"role": m["role"], "content": m["content"]})
+        
+        body = {"model": self.model, "messages": anthropic_messages, "max_tokens": 4096, "stream": True, **kwargs}
+        if system_msg:
+            body["system"] = system_msg
+        body.pop("max_completion_tokens", None)
+        
+        url = f"{self.base_url.rstrip('/')}/messages"
+        headers = {
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+        }
+        with httpx.stream("POST", url, headers=headers, json=body, timeout=120) as resp:
+            resp.raise_for_status()
+            event_name = None
+            for line in resp.iter_lines():
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("event: "):
+                    event_name = line[7:].strip()
+                elif line.startswith("data: "):
+                    data_str = line[6:].strip()
+                    try:
+                        data = json.loads(data_str)
+                        if event_name == "content_block_delta":
+                            delta = data.get("delta", {})
+                            if delta.get("type") == "text_delta":
+                                text = delta.get("text", "")
+                                if text:
+                                    yield text
+                    except Exception:
+                        pass
+
     def list_models(self) -> list[dict[str, Any]]:
         import httpx
         url = f"{self.base_url.rstrip('/')}/models"
@@ -564,8 +649,12 @@ class GeminiProvider(BaseProvider):
 
     def _request(self, endpoint: str, json_body: dict) -> dict[str, Any]:
         import httpx
-        url = f"{self.base_url}/{endpoint}?key={self.api_key}"
-        resp = httpx.post(url, json=json_body, timeout=120)
+        url = f"{self.base_url}/{endpoint}"
+        headers = {
+            "x-goog-api-key": self.api_key,
+            "Content-Type": "application/json",
+        }
+        resp = httpx.post(url, headers=headers, json=json_body, timeout=120)
         try:
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:
@@ -576,6 +665,32 @@ class GeminiProvider(BaseProvider):
                 pass
             raise RuntimeError(f"Gemini API error {resp.status_code}{detail}") from e
         return resp.json()
+
+    def _stream_request(self, endpoint: str, json_body: dict) -> Generator[str, None, None]:
+        import httpx
+        import json
+        import re
+        
+        url = f"{self.base_url}/{endpoint}"
+        headers = {
+            "x-goog-api-key": self.api_key,
+            "Content-Type": "application/json",
+        }
+        with httpx.stream("POST", url, headers=headers, json=json_body, timeout=120) as resp:
+            resp.raise_for_status()
+            buffer = ""
+            for chunk in resp.iter_text():
+                buffer += chunk
+                matches = list(re.finditer(r'"text"\s*:\s*"((?:[^"\\]|\\.)*)"', buffer))
+                if matches:
+                    for match in matches:
+                        text_val = match.group(1)
+                        try:
+                            text_val = json.loads(f'"{text_val}"')
+                        except Exception:
+                            pass
+                        yield text_val
+                    buffer = buffer[matches[-1].end():]
 
     def chat(self, messages: list[dict], **kwargs) -> dict[str, Any]:
         gemini_contents = []
@@ -594,10 +709,28 @@ class GeminiProvider(BaseProvider):
             model_name = f"models/{model_name}"
         return self._request(f"{model_name}:generateContent", body)
 
+    def stream_chat(self, messages: list[dict], **kwargs) -> Generator[str, None, None]:
+        gemini_contents = []
+        system_text = None
+        for m in messages:
+            if m["role"] == "system":
+                system_text = m["content"]
+                continue
+            role = "user" if m["role"] == "user" else "model"
+            gemini_contents.append({"role": role, "parts": [{"text": m["content"]}]})
+        body = {"contents": gemini_contents, **kwargs}
+        if system_text:
+            body["system_instruction"] = {"parts": [{"text": system_text}]}
+        model_name = self.model
+        if not model_name.startswith("models/"):
+            model_name = f"models/{model_name}"
+        yield from self._stream_request(f"{model_name}:streamGenerateContent", body)
+
     def list_models(self) -> list[dict[str, Any]]:
         import httpx
-        url = f"{self.base_url}/models?key={self.api_key}"
-        resp = httpx.get(url, timeout=30)
+        url = f"{self.base_url}/models"
+        headers = {"x-goog-api-key": self.api_key}
+        resp = httpx.get(url, headers=headers, timeout=30)
         try:
             resp.raise_for_status()
         except httpx.HTTPStatusError as e:

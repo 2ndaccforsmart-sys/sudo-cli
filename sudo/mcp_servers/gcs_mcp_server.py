@@ -14,7 +14,7 @@ Tools exposed:
 
 Run standalone:
   python gcs_mcp_server.py
-
+? 
 Or configure in sudo via /mcp (see README).
 """
 
