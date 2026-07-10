@@ -9,11 +9,18 @@ import hashlib
 import json
 import os
 import re
-import tiktoken
 from pathlib import Path
 from typing import Any, Optional
 
 from sudo.core.config import STATE_DIR_BASE
+
+# Optional tiktoken for accurate token counting
+try:
+    import tiktoken
+    TIKTOKEN_AVAILABLE = True
+except ImportError:
+    tiktoken = None
+    TIKTOKEN_AVAILABLE = False
 
 
 # Cache project hash to avoid repeated subprocess calls
